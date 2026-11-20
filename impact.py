@@ -8,7 +8,6 @@ No patched code is imported or executed by this module.
 from __future__ import annotations
 
 import ast
-import copy
 import gzip
 import hashlib
 import json
@@ -205,29 +204,20 @@ def _scope_tree(source: str) -> tuple[ast.Module, list[_Scope]]:
     return tree, scopes
 
 
-def _module_shell(tree: ast.Module) -> str:
-    """Keep import-time structure, stripping only ordinary function bodies."""
-    tree = copy.deepcopy(tree)
-
-    class StripBodies(ast.NodeTransformer):
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
-            # A function's docstring is observable at definition/import time,
-            # even when no test executes the function body.
-            docstring = (
-                node.body[:1]
-                if node.body and isinstance(node.body[0], ast.Expr)
-                and isinstance(node.body[0].value, ast.Constant)
-                and isinstance(node.body[0].value.value, str)
-                else []
-            )
-            node.body = docstring + [ast.Pass()]
-            return node
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
-            return self.visit_FunctionDef(node)
-
-    StripBodies().visit(tree)
-    return ast.dump(tree, include_attributes=False)
+def _module_shell(value):
+    """Compare import-time AST structure without copying ordinary function bodies."""
+    if isinstance(value, list):
+        return tuple(_module_shell(item) for item in value)
+    if not isinstance(value, ast.AST):
+        # Keep True, 1 and 1.0 distinguishable, just as ast.dump does.
+        return repr(value)
+    fields = []
+    for name, child in ast.iter_fields(value):
+        if name == "body" and isinstance(value, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # The docstring is visible at import even if nobody calls the function.
+            child = child[:1] if ast.get_docstring(value, clean=False) is not None else []
+        fields.append((name, _module_shell(child)))
+    return type(value), tuple(fields)
 
 
 def _read_json(path: str | Path) -> Any:
