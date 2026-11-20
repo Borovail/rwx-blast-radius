@@ -1,3 +1,7 @@
 **
 !selector.py
 !scheduler.py
+!impact.py
+!maps/
+maps/*
+!maps/coverage.json.gz

@@ -8,13 +8,20 @@ With Docker, GNU Make and Python installed, run `make sample`. To evaluate the s
 
 ```sh
 python tools/fetch_sample.py
-python selector.py sample > output.jsonl
+git init .work/sqlglot
+git -C .work/sqlglot fetch --depth=1 https://github.com/tobymao/sqlglot.git eb11aec4be8cb2122afe713a4816662c3f0fb2fa
+git -C .work/sqlglot checkout --detach FETCH_HEAD
+python selector.py sample --base .work/sqlglot > output.jsonl
 python score.py sample sample/answers.json output.jsonl
 ```
 
 The sample download verifies the official archive checksum. Sample patches and labels stay outside the submission image and Git history. The scorer reports simulated time and the number of commits with missed failures. The competition separately charges the CPU time of the selector.
 
 Run `make profile` for three fresh container runs with the scorer's limits. Each run prints local selector CPU time to stderr, checks the output byte limit and evaluates the JSONL with the official scorer. Server CPU timing depends on the scoring machine.
+
+## Selection
+
+The selector validates the diff against pinned source, maps affected function bodies to measured test coverage, and includes tests that read a changed fixture or source file. Changes it cannot attribute to tests use the full catalog. The scheduler tries one through eight workers using integer-millisecond durations and charges the worker overhead from the official scorer.
 
 ## Sources
 
