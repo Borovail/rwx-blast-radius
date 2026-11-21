@@ -29,6 +29,8 @@ For table callbacks and same-shaped class settings, it uses measured handler cal
 
 For changes to boolean values in an expression class's literal `arg_types` dictionary, the selector can use a baseline map of tests that consume those values or the derived `required_args` set. The map follows inheritance and schema copies. For an isolated change, startup validation can preserve the same outcome when all affected arguments were populated on every observed call. Changes to the keys and unverified startup readers retain the existing fallback. [Schema map reproduction](maps/README.md#expression-argument-schemas)
 
+For isolated changes to required arguments, the collector also records which arguments were populated on each numbered test's calls to the validator. A test can leave the schedule if every observed read confirms the same validation outcome. [Per-test schema observations](maps/README.md#expression-argument-schemas)
+
 For a literal setting on a concrete SQL dialect, the selector can use tests that read that setting directly or through inheritance. The map distinguishes a lookup of one class dictionary key from enumeration of the whole dictionary. [Scalar map reproduction](maps/README.md#literal-settings-on-dialect-classes)
 
 ## Sources

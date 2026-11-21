@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 
-from m2_dispatch import BASE_COMMIT, STARTUP_WITNESS_POLICY, DispatchSelector, declarations
+from m2_dispatch import BASE_COMMIT, RUNTIME_WITNESS_POLICY, STARTUP_WITNESS_POLICY, DispatchSelector, declarations
 from tools.build_dispatch import Instrument, Observer, merge_artifacts, refresh_dependencies
 
 
@@ -97,6 +97,39 @@ class DispatchSelectionTests(unittest.TestCase):
         schema["context"]["startup_policy"] = "only-pure-required-set-and-schema-copies"
         self.assertIsNone(selector.select("fixture.py", source, safe))
 
+    def test_runtime_witness_retains_tests_with_unproven_or_opaque_reads(self):
+        source = "class A:\n    arg_types = {'a': True, 'b': False}\n"
+        selector = self.selector(source, {"A|arg_types": {"tests": [], "blocked": True}})
+        row = {"tests": [1, 2], "blocked": False, "always_present": [
+            {"args": ["a", "b"], "tests": [1]}, {"args": ["a"], "tests": [2]}]}
+        schema = self.selector(source, {"A|arg_types": row}).artifact
+        schema["context"].update(startup_policy=STARTUP_WITNESS_POLICY, runtime_policy=RUNTIME_WITNESS_POLICY)
+        selector._schema = schema
+        after = source.replace("False", "True")
+        self.assertEqual(selector.select("fixture.py", source, after), {2})
+        self.assertEqual(selector.select("fixture.py", source, source.replace("True", "False")), set())
+        both = source.replace("'a': True, 'b': False", "'a': False, 'b': True")
+        self.assertEqual(selector.select("fixture.py", source, both), {2})
+        self.assertEqual(selector.select("fixture.py", source, both, single_file=False), {1, 2})
+        self.assertEqual(selector.select("fixture.py", source, after + "# extra\n"), {1, 2})
+        schema["context"]["runtime_policy"] = "unknown"
+        self.assertEqual(selector.select("fixture.py", source, after), {1, 2})
+
+    def test_malformed_optional_runtime_proof_keeps_complete_reader_set(self):
+        source = "class A:\n    arg_types = {'a': True, 'b': False}\n"
+        selector = self.selector(source, {"A|arg_types": {"tests": [], "blocked": True}})
+        row = {"tests": [1, 2], "blocked": False}
+        selector._schema = self.selector(source, {"A|arg_types": row}).artifact
+        selector._schema["context"].update(startup_policy=STARTUP_WITNESS_POLICY, runtime_policy=RUNTIME_WITNESS_POLICY)
+        good = {"args": ["b"], "tests": [1]}
+        malformed = (None, "b", [None], [{}], [good, good], [dict(good, args="b")],
+                     [dict(good, args=["b", "b"])], [dict(good, tests=[True])],
+                     [dict(good, tests=[3])], [dict(good, tests=[1, 1])])
+        for groups in malformed:
+            with self.subTest(groups=groups):
+                row["always_present"] = groups
+                self.assertEqual(selector.select("fixture.py", source, source.replace("False", "True")), {1, 2})
+
     def test_general_map_takes_precedence_for_unblocked_settings(self):
         source = "class A:\n    arg_types = {'x': True}\n"
         selector = self.selector(source, {"A|arg_types": {"tests": [1, 2], "blocked": False}})
@@ -104,19 +137,19 @@ class DispatchSelectionTests(unittest.TestCase):
         self.assertEqual(selector.select("fixture.py", source, source.replace("True", "False")), {1, 2})
 
     def test_scalar_evidence_requires_one_isolated_literal_edit(self):
-        source = "class A:\n    FLAG = True\n    TEXT = 'é'\n    OFFSET = -1\n"
+        source = "class A:\n    FLAG = True\n    TEXT = 'Ã©'\n    OFFSET = -1\n"
         names = ("A|FLAG", "A|TEXT", "A|OFFSET")
         generic = {name: {"tests": [1, 2], "blocked": False} for name in names}
         selector = self.selector(source, generic)
         scalar = {name: {"tests": [2], "eligible": True, "blocked": False} for name in names}
         selector._scalars = self.selector(source, scalar).artifact
-        for old, new in (("True", "False"), ("'é'", "'àbc'"), ("-1", "-20")):
+        for old, new in (("True", "False"), ("'Ã©'", "'Ã bc'"), ("-1", "-20")):
             with self.subTest(old=old):
                 after = source.replace(old, new)
                 self.assertEqual(selector.select("fixture.py", source, after), {2})
                 self.assertEqual(selector.select("fixture.py", source, after, single_file=False), {1, 2})
         after = source.replace("True", "False")
-        for changed in (after + "# extra\n", after.replace("é", "z")):
+        for changed in (after + "# extra\n", after.replace("Ã©", "z")):
             self.assertEqual(selector.select("fixture.py", source, changed), {1, 2})
         for row in ({"eligible": False}, {"blocked": True}, {"tests": [3]}, {"tests": [True]},
                     {"tests": "2"}, {"eligible": 1}):

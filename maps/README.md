@@ -152,6 +152,14 @@ changed flag was populated in every relevant startup validation. The selector
 checks this intersection across processes, inherited providers and schema
 copies. Other edits keep their original selection.
 
+The same collector records observations for each numbered test. A test can
+leave the schedule when every reachable reader of the edited schema executed
+the pinned `Expression.error_messages` validator, and all changed arguments
+were populated on every invocation. An opaque read by that test preserves its
+place in the schedule. The collector checks the complete method's AST,
+intersects observations across processes, and accounts for shared process
+pools. File owners and explicit file readers remain in the final schedule.
+
 Use the pinned Python image, read-only SQLGlot checkout and locked dependency
 directory described above. Choose a fresh observation directory for each run.
 From the root of this project on Linux:

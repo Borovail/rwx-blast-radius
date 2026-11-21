@@ -259,5 +259,151 @@ class SchemaObservationTests(unittest.TestCase):
             self.startup_artifact([key])
 
 
+class SchemaRuntimeWitnessTests(unittest.TestCase):
+    setUp = SchemaObservationTests.setUp
+    tearDown = SchemaObservationTests.tearDown
+    execute = SchemaObservationTests.execute
+
+    def execute_trusted(self, source, trusted_source=VALIDATED_SCHEMA):
+        import hashlib
+        from unittest.mock import patch
+        from tools import build_schema_coverage as collector
+        tree = ast.parse(trusted_source)
+        owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Root")
+        method = next(node for node in owner.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "error_messages")
+        context = {"path": "fixture.py", "scope": owner.name, "method": method.name,
+                   "line": method.lineno, "column": method.col_offset,
+                   "sha256": hashlib.sha256(ast.dump(method, include_attributes=False).encode()).hexdigest()}
+        with patch.object(collector, "_VALIDATION_METHOD_CONTEXT", context):
+            return self.execute(source)
+
+    def test_inherited_pinned_method_records_per_test_safe_intersections(self):
+        namespace = self.execute_trusted(VALIDATED_SCHEMA)
+        self.observer.active = 1
+        self.assertEqual(namespace["Child"](this=False, extra=0).error_messages(), [])
+        self.assertEqual(namespace["Child"](this="", extra=None).error_messages(), [])
+        self.observer.active = 2
+        self.assertEqual(namespace["Child"](this=1, extra=[0]).error_messages(), [])
+        self.assertFalse(self.observer.opaque_reads)
+        self.assertTrue(self.observer.runtime_validations)
+        for proofs in self.observer.runtime_validations.values():
+            self.assertEqual(proofs[1], {"this"})
+            self.assertEqual(proofs[2], {"this", "extra"})
+
+    def test_missing_original_required_argument_is_opaque(self):
+        namespace = self.execute_trusted(VALIDATED_SCHEMA)
+        self.observer.active = 1
+        self.assertTrue(namespace["Child"](extra=1).error_messages())
+        self.assertFalse(self.observer.runtime_validations)
+        self.assertTrue(self.observer.opaque_reads)
+
+    def test_trailing_loop_variables_and_locals_make_method_untrusted(self):
+        for tail in ("return k", "return v", "return locals()"):
+            with self.subTest(tail=tail):
+                self.observer.runtime_validations.clear()
+                self.observer.opaque_reads.clear()
+                namespace = self.execute_trusted(VALIDATED_SCHEMA.replace("return errors or []", tail))
+                self.observer.active = 1
+                namespace["Child"](this=1, extra=1).error_messages()
+                self.assertFalse(self.observer.runtime_validations)
+                self.assertTrue(self.observer.opaque_reads)
+                self.observer.active = None
+
+    def test_copied_override_of_exact_loop_is_opaque(self):
+        namespace = self.execute_trusted(VALIDATED_SCHEMA + "class Override(Child):\n" + VALIDATOR)
+        self.observer.active = 1
+        self.assertEqual(namespace["Override"](this=1, extra=1).error_messages(), [])
+        self.assertFalse(self.observer.runtime_validations)
+        self.assertTrue(self.observer.opaque_reads)
+
+    def test_earlier_assertion_and_other_readers_remain_opaque(self):
+        # Even a trusted complete method must retain its separate value reader.
+        source = VALIDATED_SCHEMA.replace("        errors = None\n",
+            "        assert self.arg_types['this'] is True\n        errors = None\n")
+        namespace = self.execute_trusted(source, trusted_source=source)
+        self.observer.active = 1
+        self.assertEqual(namespace["Child"](this=1, extra=1).error_messages(), [])
+        self.assertTrue(self.observer.runtime_validations)
+        self.assertEqual(self.observer.opaque_reads["fixture.py|Root|arg_types"], {1})
+
+    def test_override_calling_super_and_inspecting_required_set_is_opaque(self):
+        source = VALIDATED_SCHEMA + (
+            "class Override(Child):\n"
+            "    def error_messages(self):\n"
+            "        snapshot = tuple(self.required_args)\n"
+            "        return super().error_messages()\n")
+        namespace = self.execute_trusted(source)
+        self.observer.active = 1
+        self.assertEqual(namespace["Override"](this=1, extra=1).error_messages(), [])
+        self.assertTrue(self.observer.runtime_validations)
+        self.assertTrue(self.observer.opaque_reads)
+
+    def test_proof_merge_includes_copy_and_every_runtime_consumer(self):
+        from tools.build_schema_coverage import add_runtime_safety
+        source = VALIDATED_SCHEMA + (
+            "class Copied(Child):\n"
+            "    arg_types = {**Root.arg_types, 'tail': False}\n"
+            "def opaque():\n    return Root.arg_types['extra']\n")
+        namespace = self.execute_trusted(source)
+        self.observer.active = 1
+        namespace["Copied"](this=1, extra=1).error_messages()
+        self.observer.active = 2
+        namespace["Copied"](this=1, extra=1).error_messages()
+        namespace["opaque"]()
+        self.observer.finish()
+        artifact = {"tests": [{"number": 1}, {"number": 2}],
+                    "attributes": {"fixture.py|Root|arg_types": {"tests": [1, 2], "blocked": False}},
+                    "context": {"skipped": [], "shared_pool_groups": []}}
+        add_runtime_safety(artifact, [self.directory])
+        groups = artifact["attributes"]["fixture.py|Root|arg_types"]["always_present"]
+        self.assertEqual(groups, [{"args": ["extra", "this"], "tests": [1]}])
+
+
+class SchemaRuntimeMergeTests(unittest.TestCase):
+    def artifact(self):
+        return {"tests": [{"number": n} for n in (1, 2, 3)],
+                "attributes": {"base|arg_types": {"tests": [1, 2, 3], "blocked": False}},
+                "context": {"skipped": [3], "shared_pool_groups": [{"tests": [1, 2]}]}}
+
+    def write(self, directory, data, *, child=1):
+        from tools.build_schema_coverage import RUNTIME_POLICY
+        import json
+        Path(directory, "process.start.json").write_text(json.dumps({"test": child}), encoding="utf-8")
+        Path(directory, "process.done.json").write_text(json.dumps({
+            "runtime_policy": RUNTIME_POLICY, "runtime_validations": {}, "opaque_reads": {},
+            "reads": {}, "edges": {}, "process_errors": [], **data}), encoding="utf-8")
+
+    def test_child_safe_and_opaque_evidence_both_follow_shared_pool(self):
+        from tools.build_schema_coverage import add_runtime_safety
+        for opaque in (False, True):
+            with self.subTest(opaque=opaque), tempfile.TemporaryDirectory() as directory:
+                artifact = self.artifact()
+                self.write(directory, {"edges": {"base|arg_types": ["reader"]},
+                    "reads": {"reader": [1]}, "runtime_validations": {"reader": {"1": ["this"]}},
+                    "opaque_reads": {"reader": [1]} if opaque else {}})
+                add_runtime_safety(artifact, [directory])
+                row = artifact["attributes"]["base|arg_types"]
+                self.assertEqual(row.get("always_present", []), [] if opaque else
+                                 [{"args": ["this"], "tests": [1, 2]}])
+
+    def test_unwitnessed_reachable_consumer_prevents_omission(self):
+        from tools.build_schema_coverage import add_runtime_safety
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self.artifact()
+            self.write(directory, {"edges": {"base|arg_types": ["known", "unknown"]},
+                "reads": {"known": [1], "unknown": [1]},
+                "runtime_validations": {"known": {"1": ["this"]}}})
+            add_runtime_safety(artifact, [directory])
+            self.assertNotIn("always_present", artifact["attributes"]["base|arg_types"])
+
+    def test_legacy_process_without_runtime_attestation_rejected(self):
+        from tools.build_schema_coverage import add_runtime_safety
+        with tempfile.TemporaryDirectory() as directory:
+            self.write(directory, {"runtime_policy": "legacy"})
+            with self.assertRaises(ValueError):
+                add_runtime_safety(self.artifact(), [directory])
+
+
 if __name__ == "__main__":
     unittest.main()

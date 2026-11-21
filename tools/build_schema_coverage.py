@@ -34,6 +34,16 @@ from tools.build_dispatch import (
 
 METHOD = "expression-schema-value-reads-v1"
 STARTUP_POLICY = "required-argument-witnesses-v2"
+RUNTIME_POLICY = "exact-required-validator-always-present-v1"
+# The complete method fingerprint includes code after the validation loop.
+_VALIDATION_METHOD_CONTEXT = {
+    "path": "sqlglot/expressions/core.py",
+    "scope": "Expression",
+    "method": "error_messages",
+    "line": 1314,
+    "column": 4,
+    "sha256": "71adeb739fcd42fa4bd3cb663546341df323795db4fb8275a4224cedc2da2d4d",
+}
 SCHEMAS = frozenset(("arg_types", "required_args"))
 # These builtins consume only dictionary keys in the indicated argument. A name
 # shadowed anywhere in the module is deliberately ineligible for this shortcut.
@@ -58,12 +68,18 @@ class SchemaObserver(DispatchObserver):
     def __init__(self, config):
         self.startup_validations = {}
         self.hard_blocked = set()
+        self.runtime_validations = {}
+        self.opaque_reads = {}
+        self.runtime_validation_count = 0
         super().__init__(config)
 
     def after_fork(self):
         super().after_fork()
         self.startup_validations = {}
         self.hard_blocked = set()
+        self.runtime_validations = {}
+        self.opaque_reads = {}
+        self.runtime_validation_count = 0
 
     def finish(self):
         if self.done:
@@ -73,10 +89,17 @@ class SchemaObserver(DispatchObserver):
         data = read_json(path)
         data.update(startup_validations={key: sorted(value)
                                        for key, value in self.startup_validations.items()},
-                    hard_blocked=sorted(self.hard_blocked))
+                    hard_blocked=sorted(self.hard_blocked),
+                    runtime_policy=RUNTIME_POLICY,
+                    runtime_validations={key: {str(number): sorted(names) for number, names in tests.items()}
+                                         for key, tests in self.runtime_validations.items()},
+                    opaque_reads={key: sorted(numbers) for key, numbers in self.opaque_reads.items()},
+                    runtime_validation_count=self.runtime_validation_count)
         write_json(path, data)
 
     def record_value(self, key, allowed_initializer=False):
+        if key is not None and not self.stack and self.active is not None:
+            self.opaque_reads.setdefault(key, set()).add(self.active)
         if key is not None:
             if self.stack and not allowed_initializer:
                 # An expression parsed into an import-time template can retain
@@ -88,30 +111,41 @@ class SchemaObserver(DispatchObserver):
                 self.hard_blocked.add(key)
             self.record(key)
 
-    def validation_getattr(self, obj, name):
-        """Retain reads/blocks, and witness flags unable to change this check.
+    def certified_validation_getattr(self, obj, name):
+        return self.validation_getattr(obj, name, _runtime_certified=True)
 
-        No baseline missing-required error may be present: otherwise changing
-        even a populated key can reorder the set and thus the other messages.
-        Unknown object layouts or mutable/custom container semantics fail shut.
+    def validation_getattr(self, obj, name, *, _runtime_certified=False):
+        """Keep original dependencies and prove only the exact trusted method.
+
+        Unknown runtime loops are opaque. Startup behavior stays identical to
+        the separately checked V1 policy and cannot be authorized by this proof.
         """
         value = builtins.getattr(obj, name)
         cls = obj if isinstance(obj, type) else type(obj)
         keys = {self.classkey(cls), self.owner(cls, name)} - {None}
-        if not self.stack and self.active is not None:
+        runtime = not self.stack and self.active is not None
+        if runtime and not _runtime_certified:
             for key in keys:
-                self.record(key)
+                self.record_value(key)
             return value
         safe = self.validation_safe_args(obj, value)
+        if runtime:
+            self.runtime_validation_count += 1
         for key in keys:
             if safe is None:
                 self.record_value(key)
+            elif runtime:
+                tests = self.runtime_validations.setdefault(key, {})
+                if self.active in tests:
+                    tests[self.active].intersection_update(safe)
+                else:
+                    tests[self.active] = set(safe)
+                self.record(key)
             else:
                 if key in self.startup_validations:
                     self.startup_validations[key].intersection_update(safe)
                 else:
                     self.startup_validations[key] = set(safe)
-                # Preserve the old blocker while marking its exact provenance.
                 self.blocked.add(key)
                 self.record(key)
         return value
@@ -237,6 +271,9 @@ class Instrument(DispatchInstrument):
                     self.shadowed.add(alias.asname or alias.name.split(".")[0])
         self.star_import = any(isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names)
                                for node in ast.walk(tree))
+        # Bind whole methods before any preceding statement is instrumented.
+        self.certified_loops = {id(node) for node in ast.walk(tree)
+                                if isinstance(node, ast.For) and self.certified_validator(node)}
 
     def builtin(self, name):
         return not self.star_import and name not in self.shadowed
@@ -298,6 +335,20 @@ class Instrument(DispatchInstrument):
                 and generator.ifs[0].id == value_name and isinstance(target, ast.Attribute)
                 and target.attr == "required_args" and ast.dump(target.value) == ast.dump(node.value))
 
+    def certified_validator(self, loop):
+        """Recognize the whole pinned concrete method and its original location."""
+        context = _VALIDATION_METHOD_CONTEXT
+        method = self.parents.get(id(loop))
+        owner = self.parents.get(id(method)) if method is not None else None
+        outer = self.parents.get(id(owner)) if owner is not None else None
+        return (self.path == context["path"]
+                and isinstance(method, ast.FunctionDef) and loop in method.body
+                and isinstance(owner, ast.ClassDef) and isinstance(outer, ast.Module)
+                and owner.name == context["scope"] and method.name == context["method"]
+                and method.lineno == context["line"] and method.col_offset == context["column"]
+                and hashlib.sha256(ast.dump(method, include_attributes=False).encode()).hexdigest()
+                == context["sha256"])
+
     def visit_Attribute(self, node):
         keys_only = node.attr == "arg_types" and self.keys_only(node)
         allowed_initializer = node.attr == "arg_types" and self.safe_derivation(node)
@@ -307,9 +358,11 @@ class Instrument(DispatchInstrument):
                       and ast.dump(parent, include_attributes=False) == _VALIDATION_LOOP)
         node.value = self.visit(node.value)
         if isinstance(node.ctx, ast.Load) and node.attr in SCHEMAS | {"__dict__"} and not keys_only:
-            return self.call("validation_getattr" if validation else
-                             "derived_getattr" if allowed_initializer else "getattr",
-                             [node.value, ast.Constant(node.attr)], node)
+            observer = "derived_getattr" if allowed_initializer else "getattr"
+            if validation:
+                observer = ("certified_validation_getattr" if id(parent) in self.certified_loops
+                            else "validation_getattr")
+            return self.call(observer, [node.value, ast.Constant(node.attr)], node)
         return node
 
     def visit_Call(self, node):
@@ -414,6 +467,100 @@ def add_startup_safety(artifact, directories):
                               startup_safe_declarations=proven,
                               startup_validation_keys=len(witnesses),
                               startup_hard_blocked_keys=len(hard))
+    return artifact
+
+
+def add_runtime_safety(artifact, directories):
+    """Intersect observed argument sets across all readers and processes of each test."""
+    edges, reads, opaque, proofs = {}, {}, {}, {}
+    expected = {row['number'] for row in artifact['tests']}
+    skipped = set(artifact['context'].get('skipped', ()))
+    widened = {}
+    for group in artifact['context'].get('shared_pool_groups', ()):
+        for number in group['tests']:
+            widened.setdefault(number, set()).update(group['tests'])
+    # Match refresh_dependencies' transitive connected-component widening.
+    for number in list(widened):
+        pending, component = [number], set()
+        while pending:
+            current = pending.pop()
+            if current not in component:
+                component.add(current)
+                pending.extend(widened.get(current, ()))
+        for current in component:
+            widened[current] = component
+
+    def numbers(values, child):
+        result = set(values)
+        if any(type(n) is not int or n not in expected for n in result):
+            raise ValueError('invalid runtime witness test number')
+        if child:
+            for number in list(result):
+                result.update(widened.get(number, ()))
+        return result
+
+    protocols = validations = 0
+    for directory in directories:
+        for start in sorted(Path(directory).glob('*.start.json')):
+            done = start.with_name(start.name.replace('.start.json', '.done.json'))
+            begin = read_json(start)
+            data = read_json(done)
+            if data.get('runtime_policy') != RUNTIME_POLICY:
+                raise ValueError('process lacks runtime witness protocol')
+            if data.get('process_errors'):
+                raise ValueError('runtime witness process error')
+            child = begin['test'] is not None
+            protocols += 1
+            validations += data.get('runtime_validation_count', 0)
+            for key, targets in data['edges'].items():
+                edges.setdefault(key, set()).update(targets)
+            for key, values in data['reads'].items():
+                reads.setdefault(key, set()).update(numbers(values, child))
+            for key, values in data['opaque_reads'].items():
+                opaque.setdefault(key, set()).update(numbers(values, child))
+            for key, tests in data['runtime_validations'].items():
+                target = proofs.setdefault(key, {})
+                for text, names in tests.items():
+                    number = int(text)
+                    if str(number) != text or not isinstance(names, list) or not all(type(n) is str for n in names):
+                        raise ValueError('invalid runtime validation proof')
+                    for selected in numbers([number], child):
+                        if selected in target:
+                            target[selected].intersection_update(names)
+                        else:
+                            target[selected] = set(names)
+
+    grouped_count = pair_count = 0
+    for key, dependency in artifact['attributes'].items():
+        dependency.pop('always_present', None)
+        pending, reachable = [key], set()
+        while pending:
+            current = pending.pop()
+            if current not in reachable:
+                reachable.add(current)
+                pending.extend(edges.get(current, ()))
+        by_test = {}
+        for number in dependency['tests']:
+            if number in skipped:
+                continue
+            consumers = [node for node in reachable if number in reads.get(node, ())]
+            if not consumers or any(number in opaque.get(node, ()) or number not in proofs.get(node, {})
+                                    for node in consumers):
+                continue
+            safe = set.intersection(*(proofs[node][number] for node in consumers))
+            if safe:
+                by_test[number] = tuple(sorted(safe))
+        groups = {}
+        for number, args in by_test.items():
+            groups.setdefault(args, []).append(number)
+        if groups:
+            dependency['always_present'] = [dict(args=list(args), tests=sorted(tests))
+                                            for args, tests in sorted(groups.items())]
+            grouped_count += 1
+            pair_count += len(by_test)
+    artifact['context'].update(runtime_policy=RUNTIME_POLICY, runtime_protocols=protocols,
+                               runtime_validations=validations, runtime_proven_declarations=grouped_count,
+                               runtime_proven_declaration_test_pairs=pair_count)
     return artifact
 
 
@@ -548,6 +695,7 @@ def collect(args):
                 "paths": paths, "attributes": attributes, "context": context}
     artifact = refresh_dependencies(artifact, read_json(args.coverage), [args.observations])
     artifact = add_startup_safety(artifact, [args.observations])
+    artifact = add_runtime_safety(artifact, [args.observations])
     context["attribute_scopes"] = ["schema-value-reads-and-required-args"]
     context["generator_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     write_json(args.output, artifact)

@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 BASE_COMMIT = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
 STARTUP_WITNESS_POLICY = "required-argument-witnesses-v2"
+RUNTIME_WITNESS_POLICY = "exact-required-validator-always-present-v1"
 
 
 def key_for(path: str, scope: str, name: str) -> str:
@@ -86,6 +87,29 @@ def _only_flag_tokens(old_source: str, new_source: str, old: ast.Dict, new: ast.
             return False
         lines[before.lineno - 1] = line[:start] + str(after.value).encode("ascii") + line[end:]
     return b"\n".join(lines) == new_source.encode("utf-8")
+
+
+def _runtime_schema_tests(tests: set[int], groups: Any, flags: set[str]) -> set[int]:
+    """Retain each test unless every changed flag has an unambiguous witness."""
+    if not isinstance(groups, list):
+        return tests
+    seen: set[int] = set()
+    removable: set[int] = set()
+    for group in groups:
+        if not isinstance(group, dict):
+            return tests
+        args, numbers = group.get("args"), group.get("tests")
+        if (not isinstance(args, list) or not args or not all(type(arg) is str for arg in args)
+                or len(set(args)) != len(args) or not isinstance(numbers, list) or not numbers
+                or not all(type(number) is int and number in tests for number in numbers)):
+            return tests
+        members = set(numbers)
+        if seen & members or len(members) != len(numbers):
+            return tests
+        seen.update(members)
+        if flags.issubset(args):
+            removable.update(members)
+    return tests - removable
 
 
 def _same_scalar_type(before: ast.AST, after: ast.AST) -> bool:
@@ -259,6 +283,7 @@ class DispatchSelector:
             selected: set[int] = set()
             for key, replacement in changed.items():
                 dependency = self.artifact["attributes"][key]
+                runtime_flags = None
                 if dependency["blocked"]:
                     if (self._schema is None or not key.endswith("|arg_types")
                             or self._schema["paths"][path]["sha256"] != raw["sha256"]):
@@ -267,19 +292,26 @@ class DispatchSelector:
                     if not flags:
                         return None
                     dependency = self._schema["attributes"][key]
-                    if dependency["blocked"] is not False:
+                    startup_blocked = dependency["blocked"] is not False
+                    has_witnesses = self._schema["context"].get("runtime_policy") == RUNTIME_WITNESS_POLICY
+                    isolated_flags = (single_file and len(changed) == 1 and (startup_blocked or has_witnesses)
+                                      and _only_flag_tokens(old_source, new_source, old_values[key], replacement))
+                    if startup_blocked:
                         # A second edit could change the values present during initialization.
-                        if not (single_file and len(changed) == 1 and dependency["blocked"] is True
+                        if not (isolated_flags and dependency["blocked"] is True
                                 and self._schema["context"]["startup_policy"] == STARTUP_WITNESS_POLICY):
                             return None
                         safe = dependency.get("startup_safe_args")
                         if (not isinstance(safe, list) or not all(isinstance(arg, str) for arg in safe)
-                                or not flags.issubset(safe)
-                                or not _only_flag_tokens(old_source, new_source, old_values[key], replacement)):
+                                or not flags.issubset(safe)):
                             return None
+                    if isolated_flags and has_witnesses:
+                        runtime_flags = flags
                 values = dependency["tests"]
                 if any(type(number) is not int or number not in self.numbers for number in values):
                     return None
+                if runtime_flags:
+                    values = _runtime_schema_tests(set(values), dependency.get("always_present"), runtime_flags)
                 if (self._scalars is not None and single_file and len(changed) == 1
                         and dependency["blocked"] is False and key.rsplit("|", 1)[-1].isupper()):
                     values = self._scalar_readers(key, path, raw["sha256"], set(values),
