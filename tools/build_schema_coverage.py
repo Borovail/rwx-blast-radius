@@ -30,6 +30,13 @@ from tools.build_dispatch import (
     refresh_dependencies,
     write_json,
 )
+from tools.build_inherited_schema import (
+    CORE,
+    InheritedObservation,
+    inherited_map,
+    pass_classes,
+    write_map,
+)
 
 
 METHOD = "expression-schema-value-reads-v1"
@@ -378,11 +385,33 @@ class Instrument(DispatchInstrument):
         return node
 
 
+class InheritedObserver(InheritedObservation, SchemaObserver):
+    pass
+
+
+class InheritedInstrument(Instrument):
+    def visit_Attribute(self, node):
+        if (self.path == CORE and node.lineno == 110 and node.attr == "arg_types"
+                and isinstance(node.value, ast.Name) and node.value.id == "cls"
+                and self.safe_derivation(node)):
+            return self.call("inherited_required_set_source",
+                             [node.value, ast.Constant(node.attr)], node)
+        return super().visit_Attribute(node)
+
+    def visit_Call(self, node):
+        node = self.generic_visit(node)
+        # A no-argument vars()/dir() reads its caller frame. Leave it intact.
+        if node.args or node.keywords:
+            node.func = self.call("inherited_callable", [node.func], node)
+        return node
+
+
 class Loader(importlib.machinery.SourceFileLoader):
     def source_to_code(self, data, path, *, _optimize=-1):
         relative = Path(path).resolve().relative_to(self.observer.repo).as_posix()
         tree = ast.parse(importlib.util.decode_source(data), path)
-        tree = Instrument(relative, tree).visit(tree)
+        instrument_type = InheritedInstrument if "inherited_candidates" in self.observer.config else Instrument
+        tree = instrument_type(relative, tree).visit(tree)
         ast.fix_missing_locations(tree)
         return compile(tree, path, "exec", dont_inherit=True, optimize=_optimize)
 
@@ -410,7 +439,8 @@ class Finder(importlib.abc.MetaPathFinder):
 
 
 def install(config):
-    observer = SchemaObserver(config)
+    observer_type = InheritedObserver if "inherited_candidates" in config else SchemaObserver
+    observer = observer_type(config)
     sys.meta_path.insert(0, Finder(observer))
     return observer
 
@@ -576,6 +606,8 @@ def collect(args):
     if metadata["base_commit"] != BASE_COMMIT:
         raise ValueError("wrong baseline")
     modules, paths, attributes = {}, {}, {}
+    inherited_output = getattr(args, "inherited_output", None)
+    inherited_candidates = []
     for name, expected_hash in metadata["files"].items():
         source = (args.repo / name).read_bytes()
         if hashlib.sha256(source).hexdigest() != expected_hash:
@@ -585,14 +617,19 @@ def collect(args):
             modules[module[:-9] if module.endswith(".__init__") else module] = name
             text = source.decode().replace("\r\n", "\n")
             paths[name] = {"sha256": hashlib.sha256(text.encode()).hexdigest()}
+            tree = ast.parse(text)
             attributes.update({key: {"tests": [], "blocked": True}
-                               for key in declarations(ast.parse(text), name) if key.endswith("|arg_types")})
+                               for key in declarations(tree, name) if key.endswith("|arg_types")})
+            if inherited_output is not None:
+                inherited_candidates.extend(pass_classes(name, tree))
     tests_value = read_json(args.manifest)
     tests = tests_value["tests"] if isinstance(tests_value, dict) else tests_value
     tests = [{"number": row["number"], "id": row["id"]} for row in tests]
     by_id = {row["id"]: row["number"] for row in tests}
     config = {"repo": str(args.repo), "observations": str(args.observations),
               "modules": modules, "process_hooks": True, "method": METHOD}
+    if inherited_output is not None:
+        config["inherited_candidates"] = sorted(set(inherited_candidates))
     config_path = args.observations / "config.json"
     write_json(config_path, config)
     os.environ.update(BR_DISPATCH_CONFIG=str(config_path), PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
@@ -693,12 +730,18 @@ def collect(args):
                "startup_policy": STARTUP_POLICY}
     artifact = {"version": 1, "base_commit": BASE_COMMIT, "tests": tests,
                 "paths": paths, "attributes": attributes, "context": context}
-    artifact = refresh_dependencies(artifact, read_json(args.coverage), [args.observations])
+    coverage = read_json(args.coverage)
+    artifact = refresh_dependencies(artifact, coverage, [args.observations])
     artifact = add_startup_safety(artifact, [args.observations])
     artifact = add_runtime_safety(artifact, [args.observations])
     context["attribute_scopes"] = ["schema-value-reads-and-required-args"]
     context["generator_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     write_json(args.output, artifact)
+    if inherited_output is not None and complete:
+        inherited = inherited_map(artifact, coverage, args.coverage.read_bytes(),
+                                  args.observations, config["inherited_candidates"])
+        write_map(inherited_output, inherited)
+        print(__import__("json").dumps(inherited["context"], sort_keys=True))
     print(__import__("json").dumps({key: len(value) if key in ("passed", "missing") else value
                                    for key, value in context.items()}, sort_keys=True))
     return 0 if complete else 2
@@ -712,6 +755,7 @@ def main():
     parser.add_argument("--coverage", required=True, type=Path)
     parser.add_argument("--observations", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--inherited-output", type=Path)
     parser.add_argument("--pytest-arg", action="append", default=[])
     return collect(parser.parse_args())
 

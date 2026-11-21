@@ -19,6 +19,7 @@ from typing import Any, Iterable, Mapping
 from trivia import equivalent_python
 from handlers import callback_tests
 from guards import guard_tests
+from inherited_schema import InheritedSchemaSelector
 from m2_dispatch import DispatchSelector
 from m2_body import BodyWitnesses, narrow_body
 from observer_targets import ObserverTargets
@@ -269,6 +270,7 @@ class ImpactSelector:
         self._observer_targets: ObserverTargets | None = None
         self._dispatch: DispatchSelector | None = None
         self._body: BodyWitnesses | None = None
+        self._inherited_schema: InheritedSchemaSelector | None = None
         try:
             mapped_tests = {entry["number"]: entry["id"] for entry in self.coverage["tests"]}
             context = self.coverage.get("context", {})
@@ -319,6 +321,9 @@ class ImpactSelector:
             selector._body = BodyWitnesses.from_files(maps / "body.json.gz", selector.tests, coverage_path)
             if observers is not None:
                 selector._observer_targets = ObserverTargets.from_files(coverage_path, coverage)
+                selector._inherited_schema = InheritedSchemaSelector.from_file(
+                    maps / "inherited_schema.json.gz", tests, coverage_path
+                )
         return selector
 
     @staticmethod
@@ -430,6 +435,14 @@ class ImpactSelector:
                         consumers = self._dispatch.select(
                             patch.path, record["source"], new_source, single_file=len(patches) == 1
                         )
+                    if (consumers is None and self._inherited_schema is not None
+                            and self._position_observers is not None and len(patches) == 1
+                            and len(removed) == 1 and not insertions):
+                        consumers = self._inherited_schema.select(
+                            patch.path, record["source"], new_source, next(iter(removed))
+                        )
+                        if consumers is not None:
+                            consumers.update(self._position_observers)
                     if consumers is not None:
                         selected.update(consumers)
                         continue

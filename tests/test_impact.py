@@ -134,6 +134,38 @@ class ImpactSelectorTests(unittest.TestCase):
             with self.subTest(changed=changed):
                 self.assertEqual(self.selector().select(patch(SOURCE, changed)), [0, 1, 2, 3])
 
+    def test_inherited_schema_selection_keeps_source_readers_and_observers(self):
+        path = "sqlglot/expressions/example.py"
+        source = 'class Parent:\n    arg_types = {"this": False}\n\nclass Leaf(Parent):\n    pass\n'
+        changed = source.replace("    pass", '    arg_types = {"this": True}')
+        coverage, sources = assets(source, path, lines={}, startup=[1, 2, 4, 5], readers=[1])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coverage_path = root / "coverage.json.gz"
+            coverage_path.write_bytes(gzip.compress(json.dumps(coverage).encode()))
+            source_path = root / "sources.json"
+            source_path.write_text(json.dumps(sources), encoding="utf-8")
+            digest = hashlib.sha256(coverage_path.read_bytes()).hexdigest()
+            schema = {
+                "base_commit": BASE_COMMIT,
+                "tests": [{"number": row["number"], "id": row["id"]} for row in TESTS],
+                "context": {"complete": True, "coverage_sha256": digest,
+                            "method": "inherited-argument-schemas-v1"},
+                "paths": {path: {"sha256": coverage["paths"][path]["sha256"],
+                                 "classes": {"Leaf": {"schema": {"this": False}, "tests": [0]}}}},
+            }
+            (root / "inherited_schema.json.gz").write_bytes(gzip.compress(json.dumps(schema).encode()))
+            change = patch(source, changed, path)
+            self.assertEqual(ImpactSelector.with_assets(TESTS, coverage_path, source_path).select(change),
+                             [0, 1, 2, 3])
+            positions = {"version": 1, "tests": [2], "shared": False, "coverage_sha256": digest}
+            (root / "positions.json").write_text(json.dumps(positions), encoding="utf-8")
+            selector = ImpactSelector.with_assets(TESTS, coverage_path, source_path)
+            self.assertEqual(selector.select(change), [0, 1, 2])
+            key_change = patch(source, source.replace("    pass", '    arg_types = {"other": True}'), path)
+            self.assertEqual(selector.select(key_change),
+                             [0, 1, 2, 3])
+
     def test_scope_escape_and_syntax_error_run_all(self):
         for changed in (
             SOURCE.replace("        return VALUE", "VALUE = 3"),

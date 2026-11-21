@@ -221,6 +221,30 @@ The tool checks baseline file hashes, pytest collection, numbered outcomes and
 child-process observations. Inspect the resulting `context` before copying the
 completed artifact into `maps/`.
 
+#### Overrides of inherited argument schemas
+
+The optional `inherited_schema.json.gz` records dependencies for leaf expression
+classes whose entire body is `pass`. The collector measures the effective ordered
+schema and reads of each concrete class. It retains tests that execute generated
+Python and widens dependencies for shared worker pools. Unattributed readers,
+observed schema or namespace access outside the validated argument checks, and
+observed subclasses prevent narrowing for the corresponding class.
+
+Run the schema collection command above with an additional argument
+`--inherited-output /out/inherited.json`. Use the exact Linux SQLGlot archive and
+its file-hash metadata. The test corpus and manifest are the pinned baseline.
+Check `context.complete` and use deterministic gzip compression for the optional
+map. For example, from the project root after collecting:
+
+```sh
+python -c 'from pathlib import Path; import gzip; Path("maps/inherited_schema.json.gz").write_bytes(gzip.compress(Path(".work/schema-collection/inherited.json").read_bytes(), mtime=0))'
+```
+
+The selector requires the matching coverage map and source fingerprints. The
+only supported change is a single-line substitution of `pass` with a literal
+`arg_types` declaration that preserves the ordered keys and flips one boolean.
+Unsupported changes use the existing selection policy.
+
 ### Literal settings on dialect classes
 
 `scalars.json.gz` attributes reads of public boolean, integer and string settings
