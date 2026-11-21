@@ -137,7 +137,9 @@ class DispatchSelector:
             return cls({}, tests)
         if schema_path is not None and selector.ready:
             schema = cls.from_file(schema_path, selector.artifact["tests"])
-            if schema.ready and schema.artifact["context"].get("method") == "expression-schema-value-reads-v1":
+            context = schema.artifact["context"] if schema.ready else {}
+            if (context.get("method") == "expression-schema-value-reads-v1"
+                    and context.get("startup_policy") == "only-pure-required-set-and-schema-copies"):
                 selector._schema = schema.artifact
         return selector
 

@@ -44,7 +44,8 @@ class DispatchSelectionTests(unittest.TestCase):
         source = "class A:\n    arg_types = {'left': True, 'right': False}\n"
         generic = self.selector(source, {"A|arg_types": {"tests": [], "blocked": True}}).artifact
         schema = self.selector(source, {"A|arg_types": {"tests": [2], "blocked": False}}).artifact
-        schema["context"]["method"] = "expression-schema-value-reads-v1"
+        schema["context"].update(method="expression-schema-value-reads-v1",
+                                 startup_policy="only-pure-required-set-and-schema-copies")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             dispatch_path, schema_path = root / "dispatch.gz", root / "schema.gz"
@@ -61,6 +62,7 @@ class DispatchSelectionTests(unittest.TestCase):
                         source.replace("False", "True") + "raise RuntimeError()\n"):
                 self.assertIsNone(selector.select("fixture.py", source, new))
             for record in (dict(schema, context={"complete": False}), dict(schema, context={"complete": True}),
+                           dict(schema, context={"complete": True, "method": "expression-schema-value-reads-v1"}),
                            dict(schema, tests=[]), dict(schema, paths={"fixture.py": {"sha256": "stale"}}),
                            dict(schema, attributes={"fixture.py|A|arg_types": {"blocked": True, "tests": [2]}}),
                            dict(schema, attributes={"fixture.py|A|arg_types": {"blocked": False, "tests": [999]}})):
