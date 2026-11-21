@@ -5,6 +5,7 @@
 !handlers.py
 !guards.py
 !m2_body.py
+!m2_dispatch.py
 !observer_targets.py
 !trivia.py
 !maps/
@@ -13,3 +14,4 @@ maps/*
 !maps/positions.json
 !maps/observer_targets.json
 !maps/body.json.gz
+!maps/dispatch.json.gz

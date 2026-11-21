@@ -19,6 +19,7 @@ from typing import Any, Iterable, Mapping
 from trivia import equivalent_python
 from handlers import callback_tests
 from guards import guard_tests
+from m2_dispatch import DispatchSelector
 from m2_body import BodyWitnesses, narrow_body
 from observer_targets import ObserverTargets
 
@@ -266,6 +267,7 @@ class ImpactSelector:
         self._untraced: set[int] = set()
         self._position_observers: set[int] | None = None
         self._observer_targets: ObserverTargets | None = None
+        self._dispatch: DispatchSelector | None = None
         self._body: BodyWitnesses | None = None
         try:
             mapped_tests = {entry["number"]: entry["id"] for entry in self.coverage["tests"]}
@@ -296,6 +298,7 @@ class ImpactSelector:
 
     @classmethod
     def with_assets(cls, tests, coverage_path, base_sources_path):
+        """Load only baseline evidence that matches this manifest and checkout."""
         try:
             coverage = _read_json(coverage_path) if coverage_path is not None else None
             sources = (
@@ -308,9 +311,11 @@ class ImpactSelector:
         observers = cls.load_position_observers(coverage_path) if coverage_path is not None else None
         selector = cls(tests, coverage, sources, observers)
         if selector._ready and coverage_path is not None:
-            selector._body = BodyWitnesses.from_files(Path(coverage_path).with_name("body.json.gz"), selector.tests, coverage_path)
-        if selector._ready and observers is not None:
-            selector._observer_targets = ObserverTargets.from_files(coverage_path, coverage)
+            maps = Path(coverage_path).parent
+            selector._dispatch = DispatchSelector.from_file(maps / "dispatch.json.gz", tests)
+            selector._body = BodyWitnesses.from_files(maps / "body.json.gz", selector.tests, coverage_path)
+            if observers is not None:
+                selector._observer_targets = ObserverTargets.from_files(coverage_path, coverage)
         return selector
 
     @staticmethod
@@ -418,6 +423,8 @@ class ImpactSelector:
                 compile(new_tree, patch.path, "exec", dont_inherit=True)
                 if _module_shell(old_tree) != _module_shell(new_tree):
                     consumers = callback_tests(old_tree, new_tree, record, self._record)
+                    if consumers is None and self._dispatch is not None:
+                        consumers = self._dispatch.select(patch.path, record["source"], new_source)
                     if consumers is not None:
                         selected.update(consumers)
                         continue

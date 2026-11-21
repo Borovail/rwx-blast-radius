@@ -143,6 +143,25 @@ class ImpactSelectorTests(unittest.TestCase):
             with self.subTest(changed=changed):
                 self.assertEqual(self.selector().select(patch(SOURCE, changed)), [0, 1, 2, 3])
 
+    def test_declaration_map_keeps_file_readers_and_untraced_tests_via_runtime_entry(self):
+        name = "pkg/settings.py"
+        source = "class Settings:\n    MODE = 1\n"
+        coverage, sources = assets(source, name, lines={}, startup=[1, 2], readers=[2])
+        coverage["context"]["untraced_tests"] = [3]
+        artifact = {
+            "version": 1, "base_commit": BASE_COMMIT, "context": {"complete": True},
+            "tests": TESTS, "paths": {name: {"sha256": coverage["paths"][name]["sha256"]}},
+            "attributes": {name + "|Settings|MODE": {"blocked": False, "tests": [0]}},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests.json").write_text(json.dumps({"tests": TESTS}))
+            (root / "sources.json").write_text(json.dumps(sources))
+            (root / "coverage.json.gz").write_bytes(gzip.compress(json.dumps(coverage).encode()))
+            (root / "dispatch.json.gz").write_bytes(gzip.compress(json.dumps(artifact).encode()))
+            selector = ImpactSelector.from_files(root / "tests.json", root / "coverage.json.gz", root / "sources.json")
+            self.assertEqual(selector.select(patch(source, source.replace("= 1", "= 2"), name)), [0, 2, 3])
+
     def test_function_docstrings_are_import_time_dependencies(self):
         source = 'def f():\n    """Original docstring."""\n    return 1\n'
         coverage, sources = assets(source, lines={"3": [1]}, startup=[1])
