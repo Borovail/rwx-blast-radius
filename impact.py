@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping
 
 from trivia import equivalent_python
 from handlers import callback_tests
+from guards import guard_tests
 from observer_targets import ObserverTargets
 
 
@@ -428,6 +429,14 @@ class ImpactSelector:
                     if len(matching) != 1 or anchor in record["startup"] or anchor + 1 in record["startup"]:
                         raise _UnsafePatch("insertion does not have two safe scope anchors")
                     touched.add(matching[0])
+                if len(removed) == 1 and not insertions:
+                    line = next(iter(removed))
+                    original_line = record["source"].split("\n")[line - 1].lstrip()
+                    if original_line.startswith(("if ", "elif ", "while ")):
+                        guarded = guard_tests(old_tree, new_tree, removed, insertions, record)
+                        if guarded is not None:
+                            selected.update(guarded)
+                            continue
                 for scope in touched:
                     dependencies: set[int] = set()
                     for line, tests in record["lines"].items():

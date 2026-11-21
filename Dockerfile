@@ -8,5 +8,5 @@ RUN mkdir /base && tar xzf /tmp/base.tar.gz -C /base --strip-components=1
 FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 COPY --from=upstream /base /app/base
 COPY maps/coverage.json.gz maps/positions.json maps/observer_targets.json /app/maps/
-COPY selector.py scheduler.py impact.py handlers.py observer_targets.py trivia.py /app/
+COPY selector.py scheduler.py impact.py handlers.py guards.py observer_targets.py trivia.py /app/
 CMD ["python", "/app/selector.py"]
