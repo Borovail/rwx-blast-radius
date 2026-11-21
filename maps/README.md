@@ -245,3 +245,36 @@ python tools/build_literal_coverage.py --repo /repo --manifest sample/tests.json
   --checkout-metadata .work/base_checkout.json --coverage maps/coverage.json.gz \
   --observations /out/literal-observations --output /out/scalars.json.gz
 ```
+
+### Functions observed without an entry
+
+`cold_code.json.gz` records live, source-bound Python functions whose
+instructions were never entered during a complete baseline run. The
+collector verifies the pinned checkout and installed bytecode, observes
+startup, numbered tests and Python child processes, and checks for consumers
+of code objects and source files. A function without a confirmed loaded
+binding or with an opaque reader cannot contribute to narrowing.
+
+The selector consults this map when ordinary function coverage has no
+attributable tests. It checks the original source hash and an edit confined
+to one observed function body. The signature, docstring, closure layout,
+line boundaries and executable code outside the body remain the same.
+Source readers, code and position observers and untraced tests remain in the
+schedule. Generators and coroutines can expose their code before entry, so
+their bodies are outside this rule.
+
+Use the pinned Linux image and dependencies with the read-only checkout at
+`/repo`, its Git-verified manifest at `/checkout.json`, and a fresh writable
+directory at `/out`. Run the following in the project directory.
+
+```sh
+python tools/build_cold_code.py --repo /repo --manifest sample/tests.json \
+  --checkout-metadata /checkout.json --coverage maps/coverage.json.gz \
+  --positions maps/positions.json --observations /out/observations \
+  --output /out/cold_code.json.gz
+python tools/check_cold_code_effects.py
+```
+
+Inspect the outcome and process accounting before using the map. The effects
+check shows which changes are visible when a function is created or its code
+is inspected before a call.

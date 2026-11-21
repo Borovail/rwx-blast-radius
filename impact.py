@@ -19,6 +19,7 @@ from typing import Any, Iterable, Mapping
 from trivia import equivalent_python
 from handlers import callback_tests
 from guards import guard_tests
+from cold_code import ColdCode
 from m2_dispatch import DispatchSelector
 from m2_body import BodyWitnesses, narrow_body
 from observer_targets import ObserverTargets
@@ -269,6 +270,7 @@ class ImpactSelector:
         self._observer_targets: ObserverTargets | None = None
         self._dispatch: DispatchSelector | None = None
         self._body: BodyWitnesses | None = None
+        self._cold_code: ColdCode | None = None
         try:
             mapped_tests = {entry["number"]: entry["id"] for entry in self.coverage["tests"]}
             context = self.coverage.get("context", {})
@@ -319,6 +321,9 @@ class ImpactSelector:
             selector._body = BodyWitnesses.from_files(maps / "body.json.gz", selector.tests, coverage_path)
             if observers is not None:
                 selector._observer_targets = ObserverTargets.from_files(coverage_path, coverage)
+                selector._cold_code = ColdCode.from_files(
+                    maps / "cold_code.json.gz", coverage_path, tests
+                )
         return selector
 
     @staticmethod
@@ -470,6 +475,15 @@ class ImpactSelector:
                                 raise _UnsafePatch("function executes outside test context")
                             dependencies.update(tests)
                     if not dependencies and not owners:
+                        if self._cold_code is not None and self._position_observers is not None:
+                            readers = self._cold_code.select(
+                                patch.path, record["source"], new_source, record,
+                                position_observers=self._position_observers | self._untraced,
+                                single_file=len(patches) == 1,
+                            )
+                            if readers is not None:
+                                selected.update(readers)
+                                continue
                         raise _UnsafePatch("function has no attributable coverage")
                     selected.update(dependencies)
             return sorted(selected)
