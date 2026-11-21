@@ -72,7 +72,8 @@ def fingerprint(repo, coverage):
         path = PurePosixPath(name)
         if path.is_absolute() or ".." in path.parts or path.as_posix() != name:
             raise ValueError("invalid base map path")
-        target = (repo / name).resolve()
+        entry = repo / name
+        target = entry.resolve()
         if not target.is_relative_to(repo):
             raise ValueError("base map path escapes checkout")
         raw = target.read_bytes()
@@ -81,6 +82,12 @@ def fingerprint(repo, coverage):
         except UnicodeDecodeError:
             content = raw
         digest = hashlib.sha256(content).hexdigest()
+        if (digest != record["sha256"] and entry.is_symlink()
+                and target.relative_to(repo).as_posix() in coverage["paths"]):
+            # A Git checkout with core.symlinks=false stores the link text in a
+            # regular file. Accept its exact Git blob when the real referent is
+            # also fingerprinted by this map.
+            digest = hashlib.sha256(os.fsencode(os.readlink(entry))).hexdigest()
         if digest != record["sha256"]:
             raise ValueError("base source mismatch: " + name)
         hashes[name] = digest
