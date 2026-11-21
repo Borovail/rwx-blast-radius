@@ -1,4 +1,5 @@
 import ast
+import gzip
 import hashlib
 import json
 import os
@@ -38,6 +39,38 @@ class DispatchSelectionTests(unittest.TestCase):
         source = "class A:\n    FLAG = True\n"
         selector = self.selector(source, {"A|FLAG": {"tests": [1], "blocked": False}})
         self.assertIsNone(selector.select("fixture.py", source, source.replace("True", "1")))
+
+    def test_specialized_schema_map_only_accepts_verified_bool_edits(self):
+        source = "class A:\n    arg_types = {'left': True, 'right': False}\n"
+        generic = self.selector(source, {"A|arg_types": {"tests": [], "blocked": True}}).artifact
+        schema = self.selector(source, {"A|arg_types": {"tests": [2], "blocked": False}}).artifact
+        schema["context"]["method"] = "expression-schema-value-reads-v1"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dispatch_path, schema_path = root / "dispatch.gz", root / "schema.gz"
+            dispatch_path.write_bytes(gzip.compress(json.dumps(generic).encode()))
+
+            def load(artifact):
+                schema_path.write_bytes(gzip.compress(json.dumps(artifact).encode()))
+                return DispatchSelector.from_file(dispatch_path, generic["tests"], schema_path=schema_path)
+
+            selector = load(schema)
+            self.assertEqual(selector.select("fixture.py", source, source.replace("False", "True")), {2})
+            for new in (source.replace("False", "1"), source.replace("right", "left"),
+                        source.replace("'left': True, 'right': False", "'right': False, 'left': True"),
+                        source.replace("False", "True") + "raise RuntimeError()\n"):
+                self.assertIsNone(selector.select("fixture.py", source, new))
+            for record in (dict(schema, context={"complete": False}), dict(schema, context={"complete": True}),
+                           dict(schema, tests=[]), dict(schema, paths={"fixture.py": {"sha256": "stale"}}),
+                           dict(schema, attributes={"fixture.py|A|arg_types": {"blocked": True, "tests": [2]}}),
+                           dict(schema, attributes={"fixture.py|A|arg_types": {"blocked": False, "tests": [999]}})):
+                self.assertIsNone(load(record).select("fixture.py", source, source.replace("True", "False")))
+
+    def test_general_map_takes_precedence_for_unblocked_settings(self):
+        source = "class A:\n    arg_types = {'x': True}\n"
+        selector = self.selector(source, {"A|arg_types": {"tests": [1, 2], "blocked": False}})
+        selector._schema = self.selector(source, {"A|arg_types": {"tests": [], "blocked": False}}).artifact
+        self.assertEqual(selector.select("fixture.py", source, source.replace("True", "False")), {1, 2})
 
     def test_changed_arithmetic_initializer_requires_fallback(self):
         source = "class A:\n    FACTOR = 1 / 2\n"

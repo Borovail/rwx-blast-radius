@@ -53,6 +53,20 @@ def _dump(tree: ast.AST) -> str:
     return ast.dump(tree, include_attributes=False)
 
 
+def _required_flag_change(old: ast.AST, new: ast.AST) -> bool:
+    """Recognize value-only edits to an ordered schema of named arguments."""
+    if not isinstance(old, ast.Dict) or not isinstance(new, ast.Dict):
+        return False
+    keys = []
+    for node in (old, new):
+        if not all(isinstance(key, ast.Constant) and type(key.value) is str for key in node.keys):
+            return False
+        if not all(isinstance(value, ast.Constant) and type(value.value) is bool for value in node.values):
+            return False
+        keys.append([key.value for key in node.keys])
+    return keys[0] == keys[1] and len(set(keys[0])) == len(keys[0])
+
+
 def _safe_delta(old: ast.AST, new: ast.AST) -> bool:
     """Same-shaped literal changes inside an otherwise identical RHS.
 
@@ -99,6 +113,7 @@ class DispatchSelector:
 
     def __init__(self, artifact: Mapping[str, Any], tests: Any = None) -> None:
         self.artifact = artifact
+        self._schema: Mapping[str, Any] | None = None
         self.ready = False
         self._cache: dict[str, tuple[str, dict[str, ast.AST], str]] = {}
         try:
@@ -113,13 +128,18 @@ class DispatchSelector:
             self.numbers = set()
 
     @classmethod
-    def from_file(cls, path: str | Path, tests: Any = None) -> "DispatchSelector":
+    def from_file(cls, path: str | Path, tests: Any = None, *, schema_path: str | Path | None = None) -> "DispatchSelector":
         try:
             path = Path(path)
             with (gzip.open if path.suffix == ".gz" else open)(path, "rt", encoding="utf-8") as f:
-                return cls(json.load(f), tests)
+                selector = cls(json.load(f), tests)
         except (OSError, ValueError, TypeError):
             return cls({}, tests)
+        if schema_path is not None and selector.ready:
+            schema = cls.from_file(schema_path, selector.artifact["tests"])
+            if schema.ready and schema.artifact["context"].get("method") == "expression-schema-value-reads-v1":
+                selector._schema = schema.artifact
+        return selector
 
     def select(self, path: str, old_source: str, new_source: str) -> set[int] | None:
         if not self.ready:
@@ -144,7 +164,7 @@ class DispatchSelector:
             new_decls = declarations(new, path)
             if set(old_values) != set(new_decls):
                 return None
-            changed = []
+            changed = {}
             for key, value in old_values.items():
                 other = new_decls[key]
                 if _dump(value) != _dump(other.value):
@@ -155,15 +175,21 @@ class DispatchSelector:
                         return None
                     if not _safe_delta(value, other.value):
                         return None
-                    changed.append(key)
+                    changed[key] = other.value
                 other.value = ast.Constant(value="__dispatch_value__")
             if not changed or old_shell != _dump(new):
                 return None
             selected: set[int] = set()
-            for key in changed:
+            for key, replacement in changed.items():
                 dependency = self.artifact["attributes"][key]
                 if dependency["blocked"]:
-                    return None
+                    if (self._schema is None or not key.endswith("|arg_types")
+                            or self._schema["paths"][path]["sha256"] != raw["sha256"]
+                            or not _required_flag_change(old_values[key], replacement)):
+                        return None
+                    dependency = self._schema["attributes"][key]
+                    if dependency["blocked"] is not False:
+                        return None
                 values = dependency["tests"]
                 if any(type(number) is not int or number not in self.numbers for number in values):
                     return None

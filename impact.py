@@ -312,7 +312,9 @@ class ImpactSelector:
         selector = cls(tests, coverage, sources, observers)
         if selector._ready and coverage_path is not None:
             maps = Path(coverage_path).parent
-            selector._dispatch = DispatchSelector.from_file(maps / "dispatch.json.gz", tests)
+            selector._dispatch = DispatchSelector.from_file(
+                maps / "dispatch.json.gz", tests, schema_path=maps / "schema.json.gz"
+            )
             selector._body = BodyWitnesses.from_files(maps / "body.json.gz", selector.tests, coverage_path)
             if observers is not None:
                 selector._observer_targets = ObserverTargets.from_files(coverage_path, coverage)
