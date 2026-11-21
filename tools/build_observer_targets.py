@@ -83,7 +83,7 @@ def observe(repo: Path, test_id: str, sites: set[tuple[str, int]]) -> dict:
         try:
             if event in PROCESS_EVENTS:
                 state["errors"].append("child process")
-            if tracking and event in {"sys.settrace", "sys.setprofile"}:
+            if tracking and event in {"sys.settrace", "sys.setprofile", "sys.addaudithook"}:
                 state["errors"].append("tracing changed")
             if event != "object.__getattr__" or len(args) != 2 or args[1] != "__code__":
                 return
@@ -221,6 +221,14 @@ def build_index(repo: Path, coverage_path: Path, positions_path: Path, observati
                          "observations": len(report["observations"]), "opcode_reads": report["opcode_reads"]})
         except (ValueError, OSError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
             failures.append({"number": number, "error": str(error)})
+    for name, record in coverage["paths"].items():
+        data = (repo / name).read_bytes()
+        try:
+            normalized = data.decode("utf-8").replace("\r\n", "\n").encode()
+        except UnicodeDecodeError:
+            normalized = data
+        if hashlib.sha256(normalized).hexdigest() != record["sha256"]:
+            failures.append({"number": None, "error": "baseline source changed during observation: " + name})
     return {"version": 1, "base_commit": BASE_COMMIT, "coverage_sha256": hashlib.sha256(raw).hexdigest(),
             "positions_sha256": positions_digest(positions), "complete": not failures,
             "tests": rows, "failures": failures}
