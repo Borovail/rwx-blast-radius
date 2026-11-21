@@ -95,3 +95,15 @@ Inspect the per-test results in `.work/refinement/full-coverage.json.gz.report.j
 before copying the refined map to `maps/coverage.json.gz`. The shipped map
 incorporates 25 isolated tests across 98 processes. Its SHA-256 is
 `74da323cb0a893cac0284dc9f35fefb2040944bf5cfa01a46a614933858c3a59`.
+
+After rebuilding coverage, regenerate the source and line-position observer
+index with the pinned checkout and the same coverage file.
+
+```sh
+python tools/build_position_index.py --repo .work/sqlglot --coverage maps/coverage.json.gz --output maps/positions.json
+```
+
+The generator verifies the source hashes and intersects source-inspection sites
+with measured test and startup coverage. The runtime enables comment selection
+when the index matches the coverage digest and all observed sites can be
+attributed to individual tests.

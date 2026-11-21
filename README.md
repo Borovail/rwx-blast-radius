@@ -23,6 +23,8 @@ Run `make profile` for three fresh container runs with the scorer's limits. Each
 
 The selector validates the diff against pinned source, maps affected function bodies to measured test coverage, and includes tests that read a changed fixture or source file. Changes it cannot attribute to tests use the full catalog. The scheduler tries one through eight workers using integer-millisecond durations and charges the worker overhead from the official scorer.
 
+For edits confined to comment or blank lines, the selector also checks Python tokens, syntax, directives and compiled code. When the checks establish equivalent executable code after accounting for line positions, it keeps tests that read the file, own the test module or inspect source positions, as well as tests with incomplete coverage. Each other file in a mixed patch still contributes its dependencies. Dynamic source inspection outside the measured baseline remains a prediction risk.
+
 ## Sources
 
 The Docker base image, Makefile run limits, scorer, scoring specification, dependency lock, and starter scheduling baseline come from the [official RWX kit](https://www.joinbuilders.org/buildathon/tracks/blast-radius). Development milestones and reproducible measurements are recorded in `PROGRESS.md`.

@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
+from trivia import equivalent_python
+
 
 BASE_COMMIT = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
 _HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$")
@@ -240,6 +242,7 @@ class ImpactSelector:
         tests: Mapping[str, Any] | Iterable[Mapping[str, Any]],
         coverage: Mapping[str, Any] | None = None,
         base_sources: Mapping[str, str] | str | Path | None = None,
+        position_observers: Iterable[int] | None = None,
     ) -> None:
         entries = list(tests["tests"] if isinstance(tests, Mapping) else tests)
         self.tests = {entry["number"]: entry["id"] for entry in entries}
@@ -257,6 +260,7 @@ class ImpactSelector:
         self._scopes: dict[str, tuple[ast.Module, list[_Scope]]] = {}
         self._ready = False
         self._untraced: set[int] = set()
+        self._position_observers: set[int] | None = None
         try:
             mapped_tests = {entry["number"]: entry["id"] for entry in self.coverage["tests"]}
             context = self.coverage.get("context", {})
@@ -270,6 +274,8 @@ class ImpactSelector:
                 and isinstance(self.coverage["paths"], Mapping)
             )
             self._untraced = self._numbers(context["untraced_tests"])
+            if position_observers is not None:
+                self._position_observers = self._numbers(position_observers)
         except (AttributeError, KeyError, TypeError, ValueError):
             self._ready = False
 
@@ -290,7 +296,21 @@ class ImpactSelector:
             )
         except (OSError, ValueError, TypeError):
             coverage = sources = None
-        return cls(tests, coverage, sources)
+        observers = cls.load_position_observers(coverage_path) if coverage_path is not None else None
+        return cls(tests, coverage, sources, observers)
+
+    @staticmethod
+    def load_position_observers(coverage_path: str | Path) -> list[int] | None:
+        coverage_path = Path(coverage_path)
+        try:
+            index = _read_json(coverage_path.with_name("positions.json"))
+            if index["version"] == 1 and index["shared"] is False and isinstance(index["tests"], list):
+                digest = hashlib.sha256(coverage_path.read_bytes()).hexdigest()
+                if digest == index["coverage_sha256"]:
+                    return index["tests"]
+        except (KeyError, OSError, ValueError, TypeError):
+            pass
+        return None
 
     def _numbers(self, values: Iterable[int]) -> set[int]:
         numbers = set(values)
@@ -367,6 +387,13 @@ class ImpactSelector:
                     if not record["readers"]:
                         raise _UnsafePatch("fixture has no attributable readers")
                     continue
+                if self._position_observers is not None and all(
+                    not line.text.strip() or line.text.lstrip().startswith("#")
+                    for hunk in patch.hunks for line in hunk.lines if line.kind != " "
+                ):
+                    if equivalent_python(record["source"], new_source, patch.path) is not None:
+                        selected.update(self._position_observers)
+                        continue
                 if patch.path not in self._scopes:
                     self._scopes[patch.path] = _scope_tree(record["source"])
                 old_tree, scopes = self._scopes[patch.path]

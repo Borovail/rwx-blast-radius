@@ -2,6 +2,8 @@
 !selector.py
 !scheduler.py
 !impact.py
+!trivia.py
 !maps/
 maps/*
 !maps/coverage.json.gz
+!maps/positions.json

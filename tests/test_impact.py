@@ -86,6 +86,45 @@ class ImpactSelectorTests(unittest.TestCase):
         self.assertEqual(self.selector().select(patch(SOURCE, middle)), [0, 1])
         self.assertEqual(self.selector().select(patch(SOURCE, boundary)), [0, 1, 2, 3])
 
+    def test_trivia_selection_keeps_observers_owners_readers_and_untraced(self):
+        path = "tests/test_a.py"
+        coverage, sources = assets(path=path, readers=[2])
+        change = patch(SOURCE, "# module comment\n" + SOURCE, path)
+        self.assertEqual(ImpactSelector(TESTS, coverage, sources, []).select(change), [0, 1, 2])
+        self.assertEqual(ImpactSelector(TESTS, coverage, sources, [3]).select(change), [0, 1, 2, 3])
+        coverage["context"]["untraced_tests"] = [3]
+        self.assertEqual(ImpactSelector(TESTS, coverage, sources, []).select(change), [0, 1, 2, 3])
+
+    def test_trivia_does_not_hide_other_files(self):
+        coverage, sources = assets()
+        fixture = "tests/data.sql"
+        data, source = assets("SELECT 1;\n", path=fixture, lines={}, readers=[2])
+        coverage["paths"].update(data["paths"])
+        sources.update(source)
+        change = patch(SOURCE, "# header\n" + SOURCE) + patch("SELECT 1;\n", "SELECT 2;\n", fixture)
+        self.assertEqual(ImpactSelector(TESTS, coverage, sources, [1]).select(change), [1, 2])
+
+    def test_comment_inside_literal_keeps_full_fallback(self):
+        sql = 'SQL = """SELECT 1\n# old\n"""\n'
+        coverage, sources = assets(sql, lines={}, startup=[1])
+        change = patch(sql, sql.replace("# old", "# new"))
+        self.assertEqual(ImpactSelector(TESTS, coverage, sources, []).select(change), [0, 1, 2, 3])
+
+    def test_position_index_requires_matching_coverage_and_attributable_observers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            coverage = Path(tmp, "coverage.json.gz")
+            coverage.write_bytes(b"baseline")
+            position_path = Path(tmp, "positions.json")
+            index = {"version": 1, "tests": [1], "shared": False,
+                     "coverage_sha256": hashlib.sha256(b"baseline").hexdigest()}
+            position_path.write_text(json.dumps(index))
+            self.assertEqual(ImpactSelector.load_position_observers(coverage), [1])
+            position_path.write_text(json.dumps(dict(index, shared=True)))
+            self.assertIsNone(ImpactSelector.load_position_observers(coverage))
+            position_path.write_text(json.dumps(index))
+            coverage.write_bytes(b"other baseline")
+            self.assertIsNone(ImpactSelector.load_position_observers(coverage))
+
     def test_import_time_or_header_edit_runs_all(self):
         for changed in (
             SOURCE.replace("VALUE = 1", "VALUE = 2"),

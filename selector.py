@@ -21,7 +21,8 @@ def main() -> None:
     tests = json.loads((data_dir / "tests.json").read_text("utf-8"))["tests"]
     with gzip.open(args.coverage, "rt", encoding="utf-8") as stream:
         coverage = json.load(stream)
-    selector = ImpactSelector(tests, coverage, args.base)
+    observers = ImpactSelector.load_position_observers(args.coverage)
+    selector = ImpactSelector(tests, coverage, args.base, observers)
     by_number = {test["number"]: test for test in tests}
     schedules = {}
     for patch in sorted((data_dir / "commits").glob("*.patch")):

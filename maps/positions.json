@@ -1,0 +1,1 @@
+{"coverage_sha256":"74da323cb0a893cac0284dc9f35fefb2040944bf5cfa01a46a614933858c3a59","shared":false,"sites":[{"file":"benchmarks/parse.py","line":276,"shared":false,"tests":[]},{"file":"tests/test_typing.py","line":16,"shared":false,"tests":["tests/test_typing.py::TestTyping::test_no_redundant_expression_metadata"]}],"tests":[1619],"version":1}
