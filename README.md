@@ -27,6 +27,8 @@ For edits confined to comment or blank lines, the selector also checks Python to
 
 For table callbacks and same-shaped class settings, it uses measured handler calls, configuration reads and dependencies created during class initialization. It can attribute an isolated condition edit to the tests that evaluated that line. For supported identity comparisons, it checks the requested operator against observed baseline operands from the TPC-DS executor test. The map generation commands are in [maps/README.md](maps/README.md) and [maps/dispatch.md](maps/dispatch.md).
 
+For changes to boolean values in an expression class's literal `arg_types` dictionary, the selector can use a baseline map of tests that consume those values or the derived `required_args` set. The map follows inheritance and schema copies. A change to the keys, or a value consumed by an unverified initializer, retains the existing fallback. [Schema map reproduction](maps/README.md#expression-argument-schemas)
+
 ## Sources
 
 The Docker base image, Makefile run limits, scorer, scoring specification, dependency lock, and starter scheduling baseline come from the [official RWX kit](https://www.joinbuilders.org/buildathon/tracks/blast-radius). Development milestones and reproducible measurements are recorded in `PROGRESS.md`.

@@ -134,3 +134,34 @@ contribute to the index.
 The recorded run exercised a broader set of comparison operators. The shipped
 map retains only baseline identity comparisons and contains 294 sites across
 36 files. The command above collects those sites directly.
+
+### Expression argument schemas
+
+`schema.json.gz` records the tests that read values from an expression class's
+`arg_types` mapping or its derived `required_args` set. Looking up whether a
+key exists and iterating over keys do not consume the stored boolean. The
+collector follows class inheritance and schema copies. An unattributed startup
+read blocks narrowing for the affected provider, except for the recognized
+construction of the required-argument set and copies of the schema itself.
+
+Use the pinned Python image, read-only SQLGlot checkout and locked dependency
+directory described above. Choose a fresh observation directory for each run.
+From the root of this project on Linux:
+
+```sh
+mkdir -p .work/schema-collection
+docker run --rm --network none --cpus 2 \
+  -e PYTHONPATH=/deps -e PYTHONDONTWRITEBYTECODE=1 -e PYTHON_CPU_COUNT=2 \
+  -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 \
+  -v "$PWD:/project:ro" -v "$PWD/.work/sqlglot:/repo:ro" \
+  -v "$PWD/.work/linux-packages:/deps:ro" -v "$PWD/.work/schema-collection:/out" \
+  -w /project \
+  python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 \
+  python tools/build_schema_coverage.py --repo /repo --manifest sample/tests.json \
+    --checkout-metadata .work/base_checkout.json --coverage maps/coverage.json.gz \
+    --observations /out/observations --output /out/schema.json.gz
+```
+
+The tool checks baseline file hashes, pytest collection, numbered outcomes and
+child-process observations. Inspect the resulting `context` before copying the
+completed artifact into `maps/`.

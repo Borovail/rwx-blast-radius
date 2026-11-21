@@ -15,3 +15,4 @@ maps/*
 !maps/observer_targets.json
 !maps/body.json.gz
 !maps/dispatch.json.gz
+!maps/schema.json.gz
