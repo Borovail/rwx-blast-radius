@@ -148,6 +148,11 @@ class DispatchSelector:
             for key, value in old_values.items():
                 other = new_decls[key]
                 if _dump(value) != _dump(other.value):
+                    # Python can consume special methods and slots without a
+                    # traceable attribute read.
+                    name = key.rsplit("|", 1)[-1]
+                    if name.startswith("__") and name.endswith("__"):
+                        return None
                     if not _safe_delta(value, other.value):
                         return None
                     changed.append(key)

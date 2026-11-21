@@ -44,6 +44,11 @@ class DispatchSelectionTests(unittest.TestCase):
         selector = self.selector(source, {"A|FACTOR": {"tests": [1], "blocked": False}})
         self.assertIsNone(selector.select("fixture.py", source, source.replace("1 / 2", "1 / 0")))
 
+    def test_python_implicit_class_protocols_require_fallback(self):
+        source = "class A:\n    __slots__ = ('value',)\n"
+        selector = self.selector(source, {"A|__slots__": {"tests": [], "blocked": False}})
+        self.assertIsNone(selector.select("fixture.py", source, source.replace("'value'", "'other'")))
+
     def test_method_change_and_initializer_call_are_unsupported(self):
         source = "class A:\n    FLAG = dict(x=True)\n    def f(self):\n        return 1\n"
         selector = self.selector(source, {"A|FLAG": {"tests": [1], "blocked": False}})

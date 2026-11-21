@@ -25,6 +25,8 @@ The selector validates the diff against pinned source, maps affected function bo
 
 For edits confined to comment or blank lines, the selector also checks Python tokens, syntax, directives and compiled code. When the checks establish equivalent executable code after accounting for line positions, it keeps tests that read the file, own the test module or inspect source positions, as well as tests with incomplete coverage. Each other file in a mixed patch still contributes its dependencies. Dynamic source inspection outside the measured baseline remains a prediction risk.
 
+For table callbacks and same-shaped class settings, it uses measured handler calls, configuration reads and dependencies created during class initialization. It can attribute an isolated condition edit to the tests that evaluated that line. For supported identity comparisons, it checks the requested operator against observed baseline operands from the TPC-DS executor test. The map generation commands are in [maps/README.md](maps/README.md) and [maps/dispatch.md](maps/dispatch.md).
+
 ## Sources
 
 The Docker base image, Makefile run limits, scorer, scoring specification, dependency lock, and starter scheduling baseline come from the [official RWX kit](https://www.joinbuilders.org/buildathon/tracks/blast-radius). Development milestones and reproducible measurements are recorded in `PROGRESS.md`.
@@ -33,9 +35,4 @@ The image fetches the MIT-licensed [SQLGlot base revision](https://github.com/to
 
 ## Practice entry
 
-| Submission field | Value |
-| --- | --- |
-| GitHub repository | https://github.com/Borovail/rwx-blast-radius |
-| Verified commit | `9794c03269accf8f8497108ac3b0fe97049f0994` |
-
-Submit these values on the [RWX track page](https://www.joinbuilders.org/buildathon/tracks/blast-radius).
+Use `https://github.com/Borovail/rwx-blast-radius` in the repository field. Leave the optional commit field empty to score the latest version of the default branch, or enter the full SHA to select a particular revision. [RWX submission page](https://www.joinbuilders.org/buildathon/tracks/blast-radius)

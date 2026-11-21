@@ -55,3 +55,30 @@ references, arithmetic, lambda bodies, added declarations, and other structural
 changes use the caller's fallback. The complete old-source hash and the remaining
 module AST must match. File readers and source-position observers are the
 caller's responsibility.
+
+The frozen artifact has 3,743 declarations, including 2,133 with attributable
+dependencies, and is 254,511 bytes. SHA-256:
+`3ac8a8956f195f42870b4df8f3a3b4953dbc80c375dfa9772a4896fa7f0c5ae6`.
+The three baseline observations together contain all 1,620 passing numbered
+protocols and 25,440 passing subtests. All 12 observed processes completed.
+Two shared optimizer workers are conservatively attributed to 22 submitters.
+
+The local observation directories are `.work/dispatch-v1/observations`,
+`.work/dispatch-repair2/observations`, and `.work/dispatch-tail/observations`.
+The prefix was checkpointed during numbered test 1490 after 1,489 passing
+protocols. Test 214 was replayed after fixing the tracing loader's explicit
+`importlib.util` import; the suffix 1490–1619 was replayed with
+`--targeted-attributes --min-test-number 1490`, retaining configuration,
+uppercase, dynamic attribute, and constructor observations. The partial
+million-node parse's positive dependencies are retained as a conservative union.
+
+```sh
+python tools/build_dispatch.py \
+  --merge .work/dispatch-v1/dispatch.json.gz \
+  --merge .work/dispatch-repair2/dispatch.json.gz \
+  --merge .work/dispatch-tail/dispatch.json.gz \
+  --refresh-observations .work/dispatch-v1/observations \
+  --refresh-observations .work/dispatch-repair2/observations \
+  --refresh-observations .work/dispatch-tail/observations \
+  --coverage maps/coverage.json.gz --output maps/dispatch.json.gz
+```
