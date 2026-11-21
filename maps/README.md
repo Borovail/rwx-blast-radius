@@ -245,3 +245,25 @@ python tools/build_literal_coverage.py --repo /repo --manifest sample/tests.json
   --checkout-metadata .work/base_checkout.json --coverage maps/coverage.json.gz \
   --observations /out/literal-observations --output /out/scalars.json.gz
 ```
+
+### Final assertions in test methods
+
+`terminal.json.gz` records how pytest loaded each test module and which numbered
+test invoked a method ending in `self.assertEqual(actual, literal)`. The
+collector observes the actual builtin operands, unittest method bindings,
+pytest hooks, fixtures, cleanups and child processes at the pinned revision.
+The selector accepts a change to one literal token at a witnessed final
+assertion. It keeps the file's tests, source and position observers, untraced
+tests and tests using the same persistent worker pool.
+
+Generate the checkout metadata on the same pinned Linux checkout used by the
+collector. Use the locked pytest dependencies and a fresh observations directory.
+
+```sh
+python tools/build_terminal_assert.py --repo /repo --manifest sample/tests.json \
+  --checkout-metadata .work/base_checkout.json --coverage maps/coverage.json.gz \
+  --positions maps/positions.json --observations /out/terminal-observations \
+  --output /out/terminal.json.gz
+python tools/validate_terminal_assert.py --map /out/terminal.json.gz \
+  --repo /repo --manifest sample/tests.json --coverage maps/coverage.json.gz
+```

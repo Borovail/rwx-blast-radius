@@ -8,6 +8,8 @@
 !m2_dispatch.py
 !observer_targets.py
 !trivia.py
+!terminal_assert.py
+!source_reads.py
 !maps/
 maps/*
 !maps/coverage.json.gz
@@ -17,3 +19,4 @@ maps/*
 !maps/dispatch.json.gz
 !maps/schema.json.gz
 !maps/scalars.json.gz
+!maps/terminal.json.gz

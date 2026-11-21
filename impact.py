@@ -22,6 +22,7 @@ from guards import guard_tests
 from m2_dispatch import DispatchSelector
 from m2_body import BodyWitnesses, narrow_body
 from observer_targets import ObserverTargets
+from terminal_assert import TerminalAssertions
 
 
 BASE_COMMIT = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
@@ -269,6 +270,7 @@ class ImpactSelector:
         self._observer_targets: ObserverTargets | None = None
         self._dispatch: DispatchSelector | None = None
         self._body: BodyWitnesses | None = None
+        self._terminal: TerminalAssertions | None = None
         try:
             mapped_tests = {entry["number"]: entry["id"] for entry in self.coverage["tests"]}
             context = self.coverage.get("context", {})
@@ -312,6 +314,9 @@ class ImpactSelector:
         selector = cls(tests, coverage, sources, observers)
         if selector._ready and coverage_path is not None:
             maps = Path(coverage_path).parent
+            selector._terminal = TerminalAssertions.from_files(
+                maps / "terminal.json.gz", coverage_path, tests
+            )
             selector._dispatch = DispatchSelector.from_file(
                 maps / "dispatch.json.gz", tests, schema_path=maps / "schema.json.gz",
                 scalar_path=maps / "scalars.json.gz",
@@ -397,9 +402,19 @@ class ImpactSelector:
             selected = set(self._untraced)
             for patch in patches:
                 record = self._record(patch.path)
-                if record["startup_read"]:
-                    raise _UnsafePatch("file was read outside an attributable test")
                 new_source, removed, insertions = _apply_patch(record["source"], patch)
+                if record["startup_read"]:
+                    if self._terminal is None or len(patches) != 1 or len(removed) != 1 or insertions:
+                        raise _UnsafePatch("file was read outside an attributable test")
+                    consumers = self._terminal.select(
+                        patch.path, record["source"], new_source, record,
+                        position_observers=self._position_observers, single_file=True,
+                        changed_line=next(iter(removed)),
+                    )
+                    if consumers is None:
+                        raise _UnsafePatch("file was read outside an attributable test")
+                    selected.update(consumers)
+                    continue
                 if not removed and not insertions:
                     raise _UnsafePatch("hunk contains no edit")
                 selected.update(record["readers"])
