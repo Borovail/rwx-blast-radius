@@ -29,13 +29,11 @@ The Docker base image, Makefile run limits, scorer, scoring specification, depen
 
 The image fetches the MIT-licensed [SQLGlot base revision](https://github.com/tobymao/sqlglot/tree/eb11aec4be8cb2122afe713a4816662c3f0fb2fa) and keeps its license in `/app/base/LICENSE`. Offline map generation also uses pytest and Coverage.py. The submitted selector uses the Python standard library. See [map reproduction](maps/README.md) for the dependency versions and commands.
 
-## Publish a practice entry
+## Practice entry
 
-Create an empty public GitHub repository. From this checkout, replace `PUBLIC_GITHUB_URL` with its HTTPS or SSH clone URL and run:
+| Submission field | Value |
+| --- | --- |
+| GitHub repository | https://github.com/Borovail/rwx-blast-radius |
+| Verified commit | `9794c03269accf8f8497108ac3b0fe97049f0994` |
 
-```sh
-git remote add origin PUBLIC_GITHUB_URL
-git push -u origin HEAD:main
-```
-
-Enter that repository's URL and the verified candidate SHA from `PROGRESS.md` on the [RWX track page](https://www.joinbuilders.org/buildathon/tracks/blast-radius). Keep the repository public and the submitted commit available through the results.
+Submit these values on the [RWX track page](https://www.joinbuilders.org/buildathon/tracks/blast-radius).
