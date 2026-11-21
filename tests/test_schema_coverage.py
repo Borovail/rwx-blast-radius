@@ -3,7 +3,30 @@ import tempfile
 from pathlib import Path
 import unittest
 
-from tools.build_schema_coverage import Instrument, SchemaObserver
+from tools.build_schema_coverage import Instrument, SchemaObserver, add_startup_safety
+
+
+VALIDATOR = (
+    "    def error_messages(self):\n"
+    "        errors = None\n"
+    "        for k in self.required_args:\n"
+    "            v = self.args.get(k)\n"
+    "            if v is None or (isinstance(v, list) and not v):\n"
+    "                if errors is None:\n"
+    "                    errors = []\n"
+    "                errors.append(f\"Required keyword: '{k}' missing for {self.__class__}\")\n"
+    "        return errors or []\n"
+)
+
+VALIDATED_SCHEMA = (
+    "class Root:\n"
+    "    arg_types = {'this': True, 'extra': False}\n"
+    "    def __init_subclass__(cls):\n"
+    "        cls.required_args = {k for k, v in cls.arg_types.items() if v}\n"
+    "    def __init__(self, **args):\n"
+    "        self.args = args\n" + VALIDATOR +
+    "class Child(Root):\n    pass\n"
+)
 
 
 class SchemaObservationTests(unittest.TestCase):
@@ -121,6 +144,119 @@ class SchemaObservationTests(unittest.TestCase):
             "class Root:\n    arg_types = {'this': True}\n"
             "VALUE = 'this' in Root.arg_types == {'this': True}\n")
         self.assertEqual(self.selected("fixture.py|Root|arg_types"), (set(), True))
+
+    def startup_artifact(self, keys):
+        self.observer.finish()
+        artifact = {"attributes": {key: {"blocked": self.selected(key)[1],
+                                         "tests": sorted(self.selected(key)[0])} for key in keys},
+                    "context": {}}
+        return add_startup_safety(artifact, [self.directory])
+
+    def test_populated_startup_validation_retains_block_and_publishes_witness(self):
+        self.execute(VALIDATED_SCHEMA +
+                     "class Generator:\n"
+                     "    TEMPLATE = Child(this='x', extra=False).error_messages()\n")
+        key = "fixture.py|Root|arg_types"
+        artifact = self.startup_artifact([key])
+        self.assertTrue(artifact["attributes"][key]["blocked"])
+        self.assertEqual(artifact["attributes"][key]["startup_safe_args"], ["extra", "this"])
+        self.assertEqual(artifact["context"]["startup_policy"], "required-argument-witnesses-v2")
+
+    def test_startup_intersection_includes_copied_and_inherited_consumers(self):
+        self.execute(VALIDATED_SCHEMA +
+                     "class Copied(Root):\n"
+                     "    arg_types = {**Root.arg_types, 'other': False}\n"
+                     "class Generator:\n"
+                     "    ONE = Child(this='x', extra=0).error_messages()\n"
+                     "    TWO = Copied(this='x', other='').error_messages()\n")
+        key = "fixture.py|Root|arg_types"
+        artifact = self.startup_artifact([key])
+        self.assertEqual(artifact["attributes"][key]["startup_safe_args"], ["this"])
+
+    def test_any_unknown_startup_read_overrides_populated_witness(self):
+        self.execute(VALIDATED_SCHEMA +
+                     "class Generator:\n"
+                     "    TEMPLATE = Child(this='x', extra=1).error_messages()\n"
+                     "UNKNOWN = Child.required_args\n")
+        key = "fixture.py|Root|arg_types"
+        self.assertNotIn("startup_safe_args", self.startup_artifact([key])["attributes"][key])
+
+    def test_missing_baseline_required_arg_keeps_hard_block(self):
+        self.execute(VALIDATED_SCHEMA +
+                     "class Generator:\n"
+                     "    TEMPLATE = Child(extra=1).error_messages()\n")
+        key = "fixture.py|Root|arg_types"
+        self.assertNotIn("startup_safe_args", self.startup_artifact([key])["attributes"][key])
+
+    def test_runtime_validation_keeps_numbered_reader(self):
+        namespace = self.execute(VALIDATED_SCHEMA)
+        self.observer.active = 17
+        self.assertEqual(namespace["Child"](this='x', extra=1).error_messages(), [])
+        key = "fixture.py|Root|arg_types"
+        self.assertEqual(self.selected(key), ({17}, False))
+        self.assertEqual(self.observer.startup_validations, {})
+
+    def test_changed_validator_and_shadowed_builtin_cannot_supply_witness(self):
+        for source in (VALIDATED_SCHEMA.replace("errors.append(", "print(k)\n                errors.append("),
+                       "def isinstance(value, cls):\n    return False\n" + VALIDATED_SCHEMA):
+            namespace = self.execute(source)
+            self.observer.stack.append("fixture.py|Consumer|cached")
+            namespace["Child"](this='x', extra=1).error_messages()
+            self.observer.stack.pop()
+        self.assertEqual(self.observer.startup_validations, {})
+
+    def test_populated_predicate_matches_validator_without_custom_container_calls(self):
+        class Example:
+            def __init__(self, args):
+                self.args = args
+
+        class StrangeList(list):
+            def __len__(self):
+                raise AssertionError("observer must not invoke custom list methods")
+
+        args = {"zero": 0, "false": False, "text": "", "dict": {}, "list": [1],
+                "empty": [], "none": None, "custom": StrangeList([1])}
+        safe = SchemaObserver.validation_safe_args(Example(args), set())
+        self.assertEqual(safe, {"zero", "false", "text", "dict", "list"})
+        self.assertIsNone(SchemaObserver.validation_safe_args(Example(args), {"empty"}))
+
+    def test_optional_custom_class_and_attribute_getters_are_never_consulted(self):
+        class Example:
+            def __init__(self, args):
+                self.args = args
+
+        class CustomClass:
+            @property
+            def __class__(self):
+                raise AssertionError("observer must not inspect optional custom __class__")
+
+        class CustomGetter:
+            def __getattribute__(self, name):
+                raise AssertionError("observer must not execute optional custom getter")
+
+        class Ordinary:
+            pass
+
+        args = {"this": "x", "class": CustomClass(), "getter": CustomGetter(), "plain": Ordinary()}
+        self.assertEqual(SchemaObserver.validation_safe_args(Example(args), {"this"}), {"this", "plain"})
+        self.assertIsNone(SchemaObserver.validation_safe_args(Example(args), {"class"}))
+        self.assertIsNone(SchemaObserver.validation_safe_args(Example(args), {"getter"}))
+
+    def test_old_or_incomplete_protocol_has_no_startup_bypass(self):
+        self.execute(VALIDATED_SCHEMA +
+                     "class Generator:\n"
+                     "    TEMPLATE = Child(this=1, extra=1).error_messages()\n")
+        self.observer.finish()
+        from tools.build_dispatch import read_json, write_json
+        done = self.directory / f"{self.observer.identity}.done.json"
+        data = read_json(done)
+        data.pop("hard_blocked")
+        write_json(done, data)
+        key = "fixture.py|Root|arg_types"
+        self.assertNotIn("startup_safe_args", self.startup_artifact([key])["attributes"][key])
+        done.unlink()
+        with self.assertRaisesRegex(ValueError, "incomplete processes"):
+            self.startup_artifact([key])
 
 
 if __name__ == "__main__":

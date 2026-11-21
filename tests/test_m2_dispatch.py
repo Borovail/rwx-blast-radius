@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 
-from m2_dispatch import BASE_COMMIT, DispatchSelector, declarations
+from m2_dispatch import BASE_COMMIT, STARTUP_WITNESS_POLICY, DispatchSelector, declarations
 from tools.build_dispatch import Instrument, Observer, merge_artifacts, refresh_dependencies
 
 
@@ -67,6 +67,35 @@ class DispatchSelectionTests(unittest.TestCase):
                            dict(schema, attributes={"fixture.py|A|arg_types": {"blocked": True, "tests": [2]}}),
                            dict(schema, attributes={"fixture.py|A|arg_types": {"blocked": False, "tests": [999]}})):
                 self.assertIsNone(load(record).select("fixture.py", source, source.replace("True", "False")))
+
+    def test_startup_witness_covers_each_modified_flag_in_isolation(self):
+        source = "class A:\n    arg_types = {'a': True, 'b': False, 'c': False}\n    FLAG = False\n"
+        records = {"A|arg_types": {"blocked": True, "tests": [1]}, "A|FLAG": {"blocked": False, "tests": [2]}}
+        generic = self.selector(source, records)
+        schema = self.selector(source, records).artifact
+        schema["context"].update(method="expression-schema-value-reads-v1", startup_policy=STARTUP_WITNESS_POLICY)
+        row = schema["attributes"]["fixture.py|A|arg_types"]
+        row["startup_safe_args"] = ["a", "b"]
+        safe = source.replace("'a': True", "'a': False").replace("'b': False", "'b': True")
+        with tempfile.TemporaryDirectory() as tmp:
+            dispatch_file, schema_file = Path(tmp) / "dispatch.gz", Path(tmp) / "schema.gz"
+            dispatch_file.write_bytes(gzip.compress(json.dumps(generic.artifact).encode()))
+            schema_file.write_bytes(gzip.compress(json.dumps(schema).encode()))
+            selector = DispatchSelector.from_file(dispatch_file, schema_path=schema_file)
+        self.assertEqual(selector.select("fixture.py", source, safe), {1})
+        self.assertIsNone(selector.select("fixture.py", source, safe, single_file=False))
+        self.assertIsNone(selector.select("fixture.py", source, "# other source edit\n" + safe))
+        self.assertIsNone(selector.select("fixture.py", source, safe.replace("'a':", "'a' :")))
+        self.assertIsNone(selector.select("fixture.py", source, safe.replace("FLAG = False", "FLAG = True")))
+        self.assertIsNone(selector.select("fixture.py", source, safe.replace("'c': False", "'c': True")))
+        self.assertIsNone(selector.select("fixture.py", source, safe.replace("'c': False", "'d': False")))
+        selector._schema = schema
+        for invalid in (None, [], "ab", ["a", 2]):
+            row["startup_safe_args"] = invalid
+            self.assertIsNone(selector.select("fixture.py", source, safe))
+        row["startup_safe_args"] = ["a", "b"]
+        schema["context"]["startup_policy"] = "only-pure-required-set-and-schema-copies"
+        self.assertIsNone(selector.select("fixture.py", source, safe))
 
     def test_general_map_takes_precedence_for_unblocked_settings(self):
         source = "class A:\n    arg_types = {'x': True}\n"

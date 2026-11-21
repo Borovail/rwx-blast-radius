@@ -140,9 +140,17 @@ map retains only baseline identity comparisons and contains 294 sites across
 `schema.json.gz` records the tests that read values from an expression class's
 `arg_types` mapping or its derived `required_args` set. Looking up whether a
 key exists and iterating over keys do not consume the stored boolean. The
-collector follows class inheritance and schema copies. An unattributed startup
-read blocks narrowing for the affected provider, except for the recognized
-construction of the required-argument set and copies of the schema itself.
+collector follows class inheritance and schema copies. A startup reader can
+make a provider unsafe to narrow. For the pinned validator's loop over required
+arguments, the collector records which arguments were populated at every
+observed startup call. If any original required argument was missing, the
+collector declines that observation because changing set membership could
+change the order of the errors. Unrecognized consumers also retain the fallback.
+
+An isolated literal flag edit can use the ordinary test readers when every
+changed flag was populated in every relevant startup validation. The selector
+checks this intersection across processes, inherited providers and schema
+copies. Other edits keep their original selection.
 
 Use the pinned Python image, read-only SQLGlot checkout and locked dependency
 directory described above. Choose a fresh observation directory for each run.

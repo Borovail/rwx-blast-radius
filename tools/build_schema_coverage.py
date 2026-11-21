@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import types
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from m2_dispatch import BASE_COMMIT, declarations
@@ -32,14 +33,49 @@ from tools.build_dispatch import (
 
 
 METHOD = "expression-schema-value-reads-v1"
+STARTUP_POLICY = "required-argument-witnesses-v2"
 SCHEMAS = frozenset(("arg_types", "required_args"))
 # These builtins consume only dictionary keys in the indicated argument. A name
 # shadowed anywhere in the module is deliberately ineligible for this shortcut.
 KEY_BUILTINS = frozenset(("len", "bool", "iter", "list", "tuple", "set", "frozenset",
                           "sorted", "reversed", "any", "all", "sum", "zip", "enumerate"))
+PLAIN_VALUES = (bool, int, float, complex, str, bytes, bytearray, tuple, dict, set,
+                frozenset, range, slice)
+
+# An exact, side-effect-free missing-required check. Merely reading a required
+# set is not enough evidence: another consumer could cache it or inspect order.
+_VALIDATION_LOOP = ast.dump(ast.parse("""
+for k in self.required_args:
+    v = self.args.get(k)
+    if v is None or (isinstance(v, list) and not v):
+        if errors is None:
+            errors = []
+        errors.append(f"Required keyword: '{k}' missing for {self.__class__}")
+""").body[0], include_attributes=False)
 
 
 class SchemaObserver(DispatchObserver):
+    def __init__(self, config):
+        self.startup_validations = {}
+        self.hard_blocked = set()
+        super().__init__(config)
+
+    def after_fork(self):
+        super().after_fork()
+        self.startup_validations = {}
+        self.hard_blocked = set()
+
+    def finish(self):
+        if self.done:
+            return
+        super().finish()
+        path = self.output / f"{self.identity}.done.json"
+        data = read_json(path)
+        data.update(startup_validations={key: sorted(value)
+                                       for key, value in self.startup_validations.items()},
+                    hard_blocked=sorted(self.hard_blocked))
+        write_json(path, data)
+
     def record_value(self, key, allowed_initializer=False):
         if key is not None:
             if self.stack and not allowed_initializer:
@@ -47,7 +83,87 @@ class SchemaObserver(DispatchObserver):
                 # a schema value in an arbitrary field. Such field consumers
                 # are outside this focused trace and cannot be inferred safe.
                 self.blocked.add(key)
+                self.hard_blocked.add(key)
+            elif not self.stack and self.active is None:
+                self.hard_blocked.add(key)
             self.record(key)
+
+    def validation_getattr(self, obj, name):
+        """Retain reads/blocks, and witness flags unable to change this check.
+
+        No baseline missing-required error may be present: otherwise changing
+        even a populated key can reorder the set and thus the other messages.
+        Unknown object layouts or mutable/custom container semantics fail shut.
+        """
+        value = builtins.getattr(obj, name)
+        cls = obj if isinstance(obj, type) else type(obj)
+        keys = {self.classkey(cls), self.owner(cls, name)} - {None}
+        if not self.stack and self.active is not None:
+            for key in keys:
+                self.record(key)
+            return value
+        safe = self.validation_safe_args(obj, value)
+        for key in keys:
+            if safe is None:
+                self.record_value(key)
+            else:
+                if key in self.startup_validations:
+                    self.startup_validations[key].intersection_update(safe)
+                else:
+                    self.startup_validations[key] = set(safe)
+                # Preserve the old blocker while marking its exact provenance.
+                self.blocked.add(key)
+                self.record(key)
+        return value
+
+    @staticmethod
+    def validation_safe_args(obj, required):
+        cls = type(obj)
+        if type.__getattribute__(cls, "__getattribute__") is not object.__getattribute__:
+            return None
+        # Read only ordinary instance fields or native slots. Properties could
+        # execute arbitrary code when read a second time by this observer.
+        for base in type.__getattribute__(cls, "__mro__"):
+            namespace = type.__getattribute__(base, "__dict__")
+            if "args" in namespace:
+                if type(namespace["args"]) is not types.MemberDescriptorType:
+                    return None
+                break
+        try:
+            args = object.__getattribute__(obj, "args")
+        except AttributeError:
+            return None
+        if type(args) is not dict or type(required) is not set:
+            return None
+        if not all(type(key) is str for key in args) or not all(type(key) is str for key in required):
+            return None
+        safe = {key for key, value in args.items() if SchemaObserver.plain_populated(value)}
+        return safe if required <= safe else None
+
+    @staticmethod
+    def plain_populated(value):
+        """Evaluate the missing-value predicate without user-defined methods.
+
+        Python's isinstance can consult an object's __class__. Optional values
+        were not necessarily tested by the original validator, so even that
+        seemingly harmless check must not execute their custom descriptors.
+        """
+        if value is None:
+            return False
+        kind = type(value)
+        if kind is list:
+            return list.__len__(value) > 0
+        if any(kind is builtin for builtin in PLAIN_VALUES):
+            return True
+        mro = type.__getattribute__(kind, "__mro__")
+        if (any(base is list for base in mro)
+                or type.__getattribute__(kind, "__getattribute__") is not object.__getattribute__):
+            return False
+        for base in mro:
+            namespace = type.__getattribute__(base, "__dict__")
+            if "__class__" in namespace:
+                return namespace["__class__"] is object.__dict__["__class__"]
+        return False
 
     def owner(self, cls, name):
         lookup = (id(cls), name)
@@ -185,9 +301,14 @@ class Instrument(DispatchInstrument):
     def visit_Attribute(self, node):
         keys_only = node.attr == "arg_types" and self.keys_only(node)
         allowed_initializer = node.attr == "arg_types" and self.safe_derivation(node)
+        parent = self.parents.get(id(node))
+        validation = (node.attr == "required_args" and isinstance(parent, ast.For)
+                      and parent.iter is node and self.builtin("isinstance") and self.builtin("list")
+                      and ast.dump(parent, include_attributes=False) == _VALIDATION_LOOP)
         node.value = self.visit(node.value)
         if isinstance(node.ctx, ast.Load) and node.attr in SCHEMAS | {"__dict__"} and not keys_only:
-            return self.call("derived_getattr" if allowed_initializer else "getattr",
+            return self.call("validation_getattr" if validation else
+                             "derived_getattr" if allowed_initializer else "getattr",
                              [node.value, ast.Constant(node.attr)], node)
         return node
 
@@ -244,6 +365,56 @@ def install(config):
 def child_install():
     if os.environ.get("BR_DISPATCH_CONFIG"):
         install(read_json(os.environ["BR_DISPATCH_CONFIG"]))
+
+
+def add_startup_safety(artifact, directories):
+    """Attach witnesses only when every reachable startup blocker is proven.
+
+    The ordinary graph and `blocked` bit remain intact. Thus consumers unaware
+    of this extension retain their original fallback, and incomplete evidence
+    can never turn a blocked declaration into an unrestricted declaration.
+    """
+    edges, blocked, hard, witnesses = {}, set(), set(), {}
+    for directory in directories:
+        for start in sorted(Path(directory).glob("*.start.json")):
+            done = start.with_name(start.name.replace(".start.json", ".done.json"))
+            if not done.exists():
+                raise ValueError("cannot prove startup safety with incomplete processes")
+            data = read_json(done)
+            for key, values in data["edges"].items():
+                edges.setdefault(key, set()).update(values)
+            blocked.update(data["blocked"])
+            hard.update(data.get("hard_blocked", data["blocked"]))
+            for key, names in data.get("startup_validations", {}).items():
+                if not isinstance(names, list) or not all(type(name) is str for name in names):
+                    raise ValueError("invalid startup validation witness")
+                if key in witnesses:
+                    witnesses[key].intersection_update(names)
+                else:
+                    witnesses[key] = set(names)
+    proven = 0
+    for key, dependency in artifact["attributes"].items():
+        dependency.pop("startup_safe_args", None)
+        if not dependency["blocked"]:
+            continue
+        pending, visited = [key], set()
+        while pending:
+            current = pending.pop()
+            if current not in visited:
+                visited.add(current)
+                pending.extend(edges.get(current, ()))
+        causes = visited & blocked
+        if not causes or causes & hard or causes - witnesses.keys():
+            continue
+        safe = set.intersection(*(witnesses[cause] for cause in causes))
+        if safe:
+            dependency["startup_safe_args"] = sorted(safe)
+            proven += 1
+    artifact["context"].update(startup_policy=STARTUP_POLICY,
+                              startup_safe_declarations=proven,
+                              startup_validation_keys=len(witnesses),
+                              startup_hard_blocked_keys=len(hard))
+    return artifact
 
 
 def collect(args):
@@ -372,10 +543,11 @@ def collect(args):
                "collection_errors": collection_errors, "unfinished": unfinished,
                "process_errors": process_errors, "unobserved_children": unobserved,
                "processes": len(starts), "schema_observation_keys": events, "method": METHOD,
-               "startup_policy": "only-pure-required-set-and-schema-copies"}
+               "startup_policy": STARTUP_POLICY}
     artifact = {"version": 1, "base_commit": BASE_COMMIT, "tests": tests,
                 "paths": paths, "attributes": attributes, "context": context}
     artifact = refresh_dependencies(artifact, read_json(args.coverage), [args.observations])
+    artifact = add_startup_safety(artifact, [args.observations])
     context["attribute_scopes"] = ["schema-value-reads-and-required-args"]
     context["generator_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     write_json(args.output, artifact)

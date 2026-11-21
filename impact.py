@@ -426,7 +426,9 @@ class ImpactSelector:
                 if _module_shell(old_tree) != _module_shell(new_tree):
                     consumers = callback_tests(old_tree, new_tree, record, self._record)
                     if consumers is None and self._dispatch is not None:
-                        consumers = self._dispatch.select(patch.path, record["source"], new_source)
+                        consumers = self._dispatch.select(
+                            patch.path, record["source"], new_source, single_file=len(patches) == 1
+                        )
                     if consumers is not None:
                         selected.update(consumers)
                         continue

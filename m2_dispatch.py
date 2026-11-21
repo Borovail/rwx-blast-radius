@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 BASE_COMMIT = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
+STARTUP_WITNESS_POLICY = "required-argument-witnesses-v2"
 
 
 def key_for(path: str, scope: str, name: str) -> str:
@@ -53,18 +54,38 @@ def _dump(tree: ast.AST) -> str:
     return ast.dump(tree, include_attributes=False)
 
 
-def _required_flag_change(old: ast.AST, new: ast.AST) -> bool:
-    """Recognize value-only edits to an ordered schema of named arguments."""
-    if not isinstance(old, ast.Dict) or not isinstance(new, ast.Dict):
-        return False
-    keys = []
-    for node in (old, new):
-        if not all(isinstance(key, ast.Constant) and type(key.value) is str for key in node.keys):
+def _changed_required_flags(old: ast.AST, new: ast.AST) -> set[str] | None:
+    """Return changed argument names for a value-only edit to a literal schema."""
+    if not isinstance(old, ast.Dict) or not isinstance(new, ast.Dict) or len(old.keys) != len(new.keys):
+        return None
+    seen: set[str] = set()
+    changed: set[str] = set()
+    for left, right, before, after in zip(old.keys, new.keys, old.values, new.values):
+        if not (isinstance(left, ast.Constant) and type(left.value) is str
+                and isinstance(right, ast.Constant) and left.value == right.value and left.value not in seen
+                and isinstance(before, ast.Constant) and type(before.value) is bool
+                and isinstance(after, ast.Constant) and type(after.value) is bool):
+            return None
+        seen.add(left.value)
+        if before.value != after.value:
+            changed.add(left.value)
+    return changed
+
+
+def _only_flag_tokens(old_source: str, new_source: str, old: ast.Dict, new: ast.Dict) -> bool:
+    """A startup witness covers only the verified boolean tokens at their original locations."""
+    # AST column offsets are byte offsets into UTF-8. Work backwards so that a
+    # replacement on a line cannot shift another replacement on the same line.
+    lines = old_source.encode("utf-8").split(b"\n")
+    for before, after in reversed(list(zip(old.values, new.values))):
+        if before.value is after.value:
+            continue
+        line = lines[before.lineno - 1]
+        start, end = before.col_offset, before.end_col_offset
+        if before.lineno != before.end_lineno or line[start:end] != str(before.value).encode("ascii"):
             return False
-        if not all(isinstance(value, ast.Constant) and type(value.value) is bool for value in node.values):
-            return False
-        keys.append([key.value for key in node.keys])
-    return keys[0] == keys[1] and len(set(keys[0])) == len(keys[0])
+        lines[before.lineno - 1] = line[:start] + str(after.value).encode("ascii") + line[end:]
+    return b"\n".join(lines) == new_source.encode("utf-8")
 
 
 def _safe_delta(old: ast.AST, new: ast.AST) -> bool:
@@ -138,12 +159,13 @@ class DispatchSelector:
         if schema_path is not None and selector.ready:
             schema = cls.from_file(schema_path, selector.artifact["tests"])
             context = schema.artifact["context"] if schema.ready else {}
+            supported_policies = ("only-pure-required-set-and-schema-copies", STARTUP_WITNESS_POLICY)
             if (context.get("method") == "expression-schema-value-reads-v1"
-                    and context.get("startup_policy") == "only-pure-required-set-and-schema-copies"):
+                    and context.get("startup_policy") in supported_policies):
                 selector._schema = schema.artifact
         return selector
 
-    def select(self, path: str, old_source: str, new_source: str) -> set[int] | None:
+    def select(self, path: str, old_source: str, new_source: str, *, single_file: bool = True) -> set[int] | None:
         if not self.ready:
             return None
         try:
@@ -186,12 +208,22 @@ class DispatchSelector:
                 dependency = self.artifact["attributes"][key]
                 if dependency["blocked"]:
                     if (self._schema is None or not key.endswith("|arg_types")
-                            or self._schema["paths"][path]["sha256"] != raw["sha256"]
-                            or not _required_flag_change(old_values[key], replacement)):
+                            or self._schema["paths"][path]["sha256"] != raw["sha256"]):
+                        return None
+                    flags = _changed_required_flags(old_values[key], replacement)
+                    if not flags:
                         return None
                     dependency = self._schema["attributes"][key]
                     if dependency["blocked"] is not False:
-                        return None
+                        # A second edit could change the values present during initialization.
+                        if not (single_file and len(changed) == 1 and dependency["blocked"] is True
+                                and self._schema["context"]["startup_policy"] == STARTUP_WITNESS_POLICY):
+                            return None
+                        safe = dependency.get("startup_safe_args")
+                        if (not isinstance(safe, list) or not all(isinstance(arg, str) for arg in safe)
+                                or not flags.issubset(safe)
+                                or not _only_flag_tokens(old_source, new_source, old_values[key], replacement)):
+                            return None
                 values = dependency["tests"]
                 if any(type(number) is not int or number not in self.numbers for number in values):
                     return None
