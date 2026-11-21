@@ -1,10 +1,19 @@
 import ast
 import unittest
 
-from trivia import equivalent_python, observer_lines
+from trivia import _code_signature, equivalent_python, observer_lines
 
 
 class TriviaTests(unittest.TestCase):
+    def test_compiled_frozensets_compare_by_typed_members(self):
+        code = compile("pass", "module.py", "exec")
+        left = code.replace(co_consts=((frozenset([-1, -2]),),))
+        right = code.replace(co_consts=((frozenset([-2, -1]),),))
+        self.assertEqual(_code_signature(left), _code_signature(right))
+        as_bool = code.replace(co_consts=(frozenset([True]),))
+        as_int = code.replace(co_consts=(frozenset([1]),))
+        self.assertNotEqual(_code_signature(as_bool), _code_signature(as_int))
+
     def test_comment_only_same_positions(self):
         result = equivalent_python("x = 1  # old\n", "x = 1  # new\n")
         self.assertIsNotNone(result)

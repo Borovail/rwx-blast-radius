@@ -75,12 +75,17 @@ def _tokens(source: bytes) -> tuple[Any, ...]:
     return codecs.lookup(encoding).name, tuple(significant), tuple(directives)
 
 
+def _constant_signature(value: Any, locations: bool) -> tuple[Any, ...]:
+    if isinstance(value, CodeType):
+        return ("code", _code_signature(value, locations))
+    if isinstance(value, (frozenset, tuple)):
+        members = (_constant_signature(item, locations) for item in value)
+        return (type(value).__name__, type(value)(members))
+    return (type(value).__name__, repr(value))
+
+
 def _code_signature(code: CodeType, locations: bool = False) -> tuple[Any, ...]:
-    constants = tuple(
-        _code_signature(value, locations) if isinstance(value, CodeType)
-        else (type(value).__name__, repr(value))
-        for value in code.co_consts
-    )
+    constants = tuple(_constant_signature(value, locations) for value in code.co_consts)
     result = (
         code.co_code, constants, code.co_names, code.co_varnames, code.co_freevars,
         code.co_cellvars, code.co_flags, code.co_argcount, code.co_posonlyargcount,
