@@ -4,6 +4,7 @@
 !impact.py
 !handlers.py
 !guards.py
+!key_tables.py
 !m2_body.py
 !m2_dispatch.py
 !observer_targets.py
@@ -17,3 +18,4 @@ maps/*
 !maps/dispatch.json.gz
 !maps/schema.json.gz
 !maps/scalars.json.gz
+!maps/key_tables.json.gz

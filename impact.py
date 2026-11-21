@@ -19,6 +19,7 @@ from typing import Any, Iterable, Mapping
 from trivia import equivalent_python
 from handlers import callback_tests
 from guards import guard_tests
+from key_tables import KeyTables
 from m2_dispatch import DispatchSelector
 from m2_body import BodyWitnesses, narrow_body
 from observer_targets import ObserverTargets
@@ -269,6 +270,7 @@ class ImpactSelector:
         self._observer_targets: ObserverTargets | None = None
         self._dispatch: DispatchSelector | None = None
         self._body: BodyWitnesses | None = None
+        self._key_tables: KeyTables | None = None
         try:
             mapped_tests = {entry["number"]: entry["id"] for entry in self.coverage["tests"]}
             context = self.coverage.get("context", {})
@@ -319,6 +321,9 @@ class ImpactSelector:
             selector._body = BodyWitnesses.from_files(maps / "body.json.gz", selector.tests, coverage_path)
             if observers is not None:
                 selector._observer_targets = ObserverTargets.from_files(coverage_path, coverage)
+                selector._key_tables = KeyTables.from_files(
+                    maps / "key_tables.json.gz", coverage_path, tests
+                )
         return selector
 
     @staticmethod
@@ -425,7 +430,15 @@ class ImpactSelector:
                 # Parsing alone accepts, for example, a return outside a function.
                 compile(new_tree, patch.path, "exec", dont_inherit=True)
                 if _module_shell(old_tree) != _module_shell(new_tree):
-                    consumers = callback_tests(old_tree, new_tree, record, self._record)
+                    consumers = None
+                    if self._key_tables is not None and self._position_observers is not None:
+                        consumers = self._key_tables.select(
+                            patch.path, record["source"], new_source, record,
+                            position_observers=self._position_observers | self._untraced,
+                            single_file=len(patches) == 1,
+                        )
+                    if consumers is None:
+                        consumers = callback_tests(old_tree, new_tree, record, self._record)
                     if consumers is None and self._dispatch is not None:
                         consumers = self._dispatch.select(
                             patch.path, record["source"], new_source, single_file=len(patches) == 1

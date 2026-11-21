@@ -245,3 +245,35 @@ python tools/build_literal_coverage.py --repo /repo --manifest sample/tests.json
   --checkout-metadata .work/base_checkout.json --coverage maps/coverage.json.gz \
   --observations /out/literal-observations --output /out/scalars.json.gz
 ```
+
+### Values read from imported tables
+
+`key_tables.json.gz` records reads of individual keys on the pinned Python
+SQLGlot checkout. The collector distinguishes a dialect's inherited table
+from an override by checking the live dictionary and key identities. A read
+without a numbered test or an unsupported use of the table blocks the
+affected keys. The key readers include tests whose reads could only be
+attributed at the line level and tests connected through shared process
+pools. A DuckDB width lookup also requires a copying generator invocation.
+
+The selector recognizes an exact single-token value change with unchanged
+keys, order and surrounding source. It accepts boolean replacements in
+set-operation defaults and bounded positive integers in the width table.
+Source readers and position observers remain in the schedule. The runtime
+image reads the witness map and the patch. Collection uses only the pinned
+baseline source and its test execution.
+
+Use the pinned Linux image and dependencies with the read-only checkout at
+`/repo`, its Git-verified manifest at `/checkout.json`, and a fresh writable
+directory at `/out`. From the project directory in the container:
+
+```sh
+python tools/build_key_tables.py --repo /repo --manifest sample/tests.json \
+  --checkout-metadata /checkout.json --coverage maps/coverage.json.gz \
+  --positions maps/positions.json --observations /out/observations \
+  --output /out/key_tables.json.gz
+python tools/check_key_table_effects.py --repo /repo
+```
+
+Inspect the outcome and process accounting before using the map. The effects
+check exercises SQLGlot's in-place and copying paths in an isolated process.
