@@ -173,3 +173,28 @@ docker run --rm --network none --cpus 2 \
 The tool checks baseline file hashes, pytest collection, numbered outcomes and
 child-process observations. Inspect the resulting `context` before copying the
 completed artifact into `maps/`.
+
+### Literal settings on dialect classes
+
+`scalars.json.gz` attributes reads of public boolean, integer and string settings
+to individual tests. The generator tracks normal and inherited attribute
+access, class-local aliases, and reads from a class dictionary. Looking up
+a fixed key in an ordinary class dictionary records the provider of that key.
+Enumeration and dynamic keys keep their broader dependencies.
+
+The generator inspects the pinned dialect metaclass and the inheritance paths
+of concrete dialect classes. The selector consults these observations only
+for a single literal replacement on an eligible declaration, with the same
+value type and all surrounding source bytes preserved. It checks the source
+hash, test manifest and both observation policies. Its result must be a subset
+of the tests selected by the general dispatch map.
+
+Use the same pinned image, dependencies, checkout and mount arguments as for
+the schema map. In the container, with a fresh writable observation directory,
+run the following command.
+
+```sh
+python tools/build_literal_coverage.py --repo /repo --manifest sample/tests.json \
+  --checkout-metadata .work/base_checkout.json --coverage maps/coverage.json.gz \
+  --observations /out/literal-observations --output /out/scalars.json.gz
+```

@@ -88,6 +88,34 @@ def _only_flag_tokens(old_source: str, new_source: str, old: ast.Dict, new: ast.
     return b"\n".join(lines) == new_source.encode("utf-8")
 
 
+def _same_scalar_type(before: ast.AST, after: ast.AST) -> bool:
+    """The baseline and candidate values must both be plain scalar literals."""
+    try:
+        original = ast.literal_eval(before)
+        candidate = ast.literal_eval(after)
+    except (ValueError, TypeError, SyntaxError):
+        return False
+    return type(original) in (bool, int, str) and type(original) is type(candidate)
+
+
+def _only_changed_literal(before: ast.expr, after: ast.expr, old_source: str, new_source: str) -> bool:
+    # Keep byte coordinates used by Python's AST, including non-ASCII source.
+    if not (before.lineno == before.end_lineno == after.lineno == after.end_lineno):
+        return False
+    if before.col_offset != after.col_offset:
+        return False
+    lines = old_source.encode().split(b"\n")
+    proposed = new_source.encode().split(b"\n")
+    if len(lines) != len(proposed):
+        return False
+    index = before.lineno - 1
+    line = lines[index]
+    new_line = proposed[index]
+    literal = new_line[after.col_offset:after.end_col_offset]
+    lines[index] = line[:before.col_offset] + literal + line[before.end_col_offset:]
+    return lines == proposed
+
+
 def _safe_delta(old: ast.AST, new: ast.AST) -> bool:
     """Same-shaped literal changes inside an otherwise identical RHS.
 
@@ -135,6 +163,7 @@ class DispatchSelector:
     def __init__(self, artifact: Mapping[str, Any], tests: Any = None) -> None:
         self.artifact = artifact
         self._schema: Mapping[str, Any] | None = None
+        self._scalars: Mapping[str, Any] | None = None
         self.ready = False
         self._cache: dict[str, tuple[str, dict[str, ast.AST], str]] = {}
         try:
@@ -149,7 +178,8 @@ class DispatchSelector:
             self.numbers = set()
 
     @classmethod
-    def from_file(cls, path: str | Path, tests: Any = None, *, schema_path: str | Path | None = None) -> "DispatchSelector":
+    def from_file(cls, path: str | Path, tests: Any = None, *,
+                  schema_path: str | Path | None = None, scalar_path: str | Path | None = None) -> "DispatchSelector":
         try:
             path = Path(path)
             with (gzip.open if path.suffix == ".gz" else open)(path, "rt", encoding="utf-8") as f:
@@ -163,7 +193,30 @@ class DispatchSelector:
             if (context.get("method") == "expression-schema-value-reads-v1"
                     and context.get("startup_policy") in supported_policies):
                 selector._schema = schema.artifact
+        if scalar_path is not None and selector.ready:
+            scalars = cls.from_file(scalar_path, selector.artifact["tests"])
+            context = scalars.artifact["context"] if scalars.ready else {}
+            if (context.get("method") == "literal-config-value-readers-v1"
+                    and context.get("namespace_policy") == "literal-class-namespace-reads-v1"
+                    and context.get("eligibility_policy") == "audited-concrete-sqlglot-dialect-scalars-v1"):
+                selector._scalars = scalars.artifact
         return selector
+
+    def _scalar_readers(self, key: str, path: str, source_hash: str, original: set[int],
+                        old: ast.expr, new: ast.expr, before: str, after: str) -> set[int]:
+        if self._scalars is None or not _same_scalar_type(old, new):
+            return original
+        try:
+            row = self._scalars["attributes"][key]
+            tests = row["tests"]
+            if (self._scalars["paths"][path]["sha256"] == source_hash
+                    and row["eligible"] is True and row["blocked"] is False
+                    and isinstance(tests, list) and all(type(n) is int and n in original for n in tests)
+                    and _only_changed_literal(old, new, before, after)):
+                return set(tests)
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass
+        return original
 
     def select(self, path: str, old_source: str, new_source: str, *, single_file: bool = True) -> set[int] | None:
         if not self.ready:
@@ -227,6 +280,10 @@ class DispatchSelector:
                 values = dependency["tests"]
                 if any(type(number) is not int or number not in self.numbers for number in values):
                     return None
+                if (self._scalars is not None and single_file and len(changed) == 1
+                        and dependency["blocked"] is False and key.rsplit("|", 1)[-1].isupper()):
+                    values = self._scalar_readers(key, path, raw["sha256"], set(values),
+                                                  old_values[key], replacement, old_source, new_source)
                 selected.update(values)
             return selected
         except (KeyError, TypeError, ValueError, SyntaxError, RecursionError, MemoryError):

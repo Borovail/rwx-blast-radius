@@ -103,6 +103,60 @@ class DispatchSelectionTests(unittest.TestCase):
         selector._schema = self.selector(source, {"A|arg_types": {"tests": [], "blocked": False}}).artifact
         self.assertEqual(selector.select("fixture.py", source, source.replace("True", "False")), {1, 2})
 
+    def test_scalar_evidence_requires_one_isolated_literal_edit(self):
+        source = "class A:\n    FLAG = True\n    TEXT = 'é'\n    OFFSET = -1\n"
+        names = ("A|FLAG", "A|TEXT", "A|OFFSET")
+        generic = {name: {"tests": [1, 2], "blocked": False} for name in names}
+        selector = self.selector(source, generic)
+        scalar = {name: {"tests": [2], "eligible": True, "blocked": False} for name in names}
+        selector._scalars = self.selector(source, scalar).artifact
+        for old, new in (("True", "False"), ("'é'", "'àbc'"), ("-1", "-20")):
+            with self.subTest(old=old):
+                after = source.replace(old, new)
+                self.assertEqual(selector.select("fixture.py", source, after), {2})
+                self.assertEqual(selector.select("fixture.py", source, after, single_file=False), {1, 2})
+        after = source.replace("True", "False")
+        for changed in (after + "# extra\n", after.replace("é", "z")):
+            self.assertEqual(selector.select("fixture.py", source, changed), {1, 2})
+        for row in ({"eligible": False}, {"blocked": True}, {"tests": [3]}, {"tests": [True]},
+                    {"tests": "2"}, {"eligible": 1}):
+            with self.subTest(row=row):
+                selector._scalars["attributes"]["fixture.py|A|FLAG"] = {**scalar["A|FLAG"], **row}
+                self.assertEqual(selector.select("fixture.py", source, after), {1, 2})
+        selector._scalars["attributes"]["fixture.py|A|FLAG"] = scalar["A|FLAG"]
+        selector._scalars["paths"]["fixture.py"]["sha256"] = "stale"
+        self.assertEqual(selector.select("fixture.py", source, after), {1, 2})
+        selector.artifact["attributes"]["fixture.py|A|FLAG"]["blocked"] = True
+        self.assertIsNone(selector.select("fixture.py", source, after))
+
+    def test_scalar_file_checks_protocol_and_manifest(self):
+        source = "class A:\n    FLAG = True\n"
+        generic = self.selector(source, {"A|FLAG": {"tests": [1, 2], "blocked": False}}).artifact
+        scalars = self.selector(source, {"A|FLAG": {"tests": [], "blocked": False, "eligible": True}}).artifact
+        scalars["context"].update(method="literal-config-value-readers-v1",
+                                  namespace_policy="literal-class-namespace-reads-v1",
+                                  eligibility_policy="audited-concrete-sqlglot-dialect-scalars-v1")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "dispatch.gz"
+            optional = root / "optional.gz"
+            path.write_bytes(gzip.compress(json.dumps(generic).encode()))
+
+            def selected():
+                selector = DispatchSelector.from_file(path, generic["tests"], scalar_path=optional)
+                return selector.select("fixture.py", source, source.replace("True", "False"))
+
+            self.assertEqual(selected(), {1, 2})
+            for invalid in ("method", "namespace_policy", "eligibility_policy", "complete"):
+                metadata = {**scalars, "context": {**scalars["context"], invalid: None}}
+                optional.write_bytes(gzip.compress(json.dumps(metadata).encode()))
+                self.assertEqual(selected(), {1, 2})
+            for metadata in ({**scalars, "tests": []}, {**scalars, "base_commit": "stale"}):
+                optional.write_bytes(gzip.compress(json.dumps(metadata).encode()))
+                self.assertEqual(selected(), {1, 2})
+            optional.write_bytes(gzip.compress(json.dumps(scalars).encode()))
+            self.assertEqual(selected(), set())
+
     def test_changed_arithmetic_initializer_requires_fallback(self):
         source = "class A:\n    FACTOR = 1 / 2\n"
         selector = self.selector(source, {"A|FACTOR": {"tests": [1], "blocked": False}})

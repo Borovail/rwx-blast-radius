@@ -228,9 +228,9 @@ class Observer:
 
 
 class Instrument(ast.NodeTransformer):
-    def __init__(self, path, tree, attribute_names=None):
+    def __init__(self, path, tree, attribute_names=None, *, declaration_reader=declarations):
         self.path = path
-        self.decls = declarations(tree, path)
+        self.decls = declaration_reader(tree, path)
         self.targets = {id(value): key for key, value in self.decls.items()}
         self.scope = []
         self.locals = []
@@ -323,11 +323,13 @@ class Instrument(ast.NodeTransformer):
 
 
 class Loader(importlib.machinery.SourceFileLoader):
+    instrument_type = Instrument
+
     def source_to_code(self, data, path, *, _optimize=-1):
         source = importlib.util.decode_source(data)
         relative = Path(path).resolve().relative_to(self.observer.repo).as_posix()
         tree = ast.parse(source, path)
-        tree = Instrument(relative, tree, self.observer.config.get("attribute_names")).visit(tree)
+        tree = self.instrument_type(relative, tree, self.observer.config.get("attribute_names")).visit(tree)
         ast.fix_missing_locations(tree)
         return compile(tree, path, "exec", dont_inherit=True, optimize=_optimize)
 
@@ -341,8 +343,9 @@ class Loader(importlib.machinery.SourceFileLoader):
 
 
 class Finder(importlib.abc.MetaPathFinder):
-    def __init__(self, observer):
+    def __init__(self, observer, instrument_type=Instrument):
         self.observer = observer
+        self.instrument_type = instrument_type
 
     def find_spec(self, fullname, path=None, target=None):
         if fullname not in self.observer.modules:
@@ -351,13 +354,14 @@ class Finder(importlib.abc.MetaPathFinder):
         if spec is not None and isinstance(spec.loader, importlib.machinery.SourceFileLoader):
             loader = Loader(fullname, spec.origin)
             loader.observer = self.observer
+            loader.instrument_type = self.instrument_type
             spec.loader = loader
         return spec
 
 
-def install(config):
-    observer = Observer(config)
-    sys.meta_path.insert(0, Finder(observer))
+def install(config, *, observer_type=Observer, instrument_type=Instrument):
+    observer = observer_type(config)
+    sys.meta_path.insert(0, Finder(observer, instrument_type))
     return observer
 
 
@@ -498,7 +502,9 @@ def refresh_dependencies(artifact, coverage, directories):
     return artifact
 
 
-def main():
+def main(*, observer_type=Observer, instrument_type=Instrument, declaration_reader=declarations,
+         method="base-attribute-initializer-process-tree-v1", child_module="build_dispatch",
+         finalize=None, require_fresh=False):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path)
     parser.add_argument("--manifest", type=Path)
@@ -521,6 +527,8 @@ def main():
         artifact = merge_artifacts([read_json(path) for path in args.merge])
         if args.refresh_observations:
             artifact = refresh_dependencies(artifact, read_json(args.coverage), args.refresh_observations)
+        if finalize is not None:
+            artifact = finalize(artifact, args)
         write_json(args.output, artifact)
         print(json.dumps({key: len(value) if key in ("passed", "missing") else value
                           for key, value in artifact["context"].items()}, sort_keys=True))
@@ -529,6 +537,8 @@ def main():
         parser.error("observation requires --repo, --manifest, --checkout-metadata, and --observations")
     args.repo = args.repo.resolve()
     args.observations = args.observations.resolve()
+    if require_fresh and args.observations.exists() and any(args.observations.iterdir()):
+        raise ValueError("observation directory must be fresh")
     args.observations.mkdir(parents=True, exist_ok=True)
     metadata = read_json(args.checkout_metadata)
     if metadata["base_commit"] != BASE_COMMIT:
@@ -545,7 +555,7 @@ def main():
             modules[module] = name
             text = source.decode().replace("\r\n", "\n")
             paths[name] = {"sha256": hashlib.sha256(text.encode()).hexdigest()}
-            for key in declarations(ast.parse(text), name):
+            for key in declaration_reader(ast.parse(text), name):
                 attributes[key] = None
     tests_value = read_json(args.manifest)
     tests = tests_value["tests"] if isinstance(tests_value, dict) else tests_value
@@ -564,7 +574,7 @@ def main():
     os.environ["SKIP_INTEGRATION"] = "0"
     os.chdir(args.repo)
     sys.path.insert(0, str(args.repo))
-    observer = install(config)
+    observer = install(config, observer_type=observer_type, instrument_type=instrument_type)
     import pytest
     outcomes, collected, collection_errors = {}, [], []
 
@@ -616,7 +626,7 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="dispatch-child-") as temporary:
         (Path(temporary) / "sitecustomize.py").write_text(
-            "from build_dispatch import child_install\nchild_install()\n", encoding="utf-8")
+            f"from {child_module} import child_install\nchild_install()\n", encoding="utf-8")
         os.environ["PYTHONPATH"] = os.pathsep.join([
             temporary, str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1]),
             str(args.repo), os.environ.get("PYTHONPATH", "")])
@@ -683,10 +693,12 @@ def main():
                "passed": passed, "skipped": skipped, "missing": missing, "extra": extra,
                "collection_errors": collection_errors, "unfinished": unfinished,
                "process_errors": process_errors, "unobserved_children": unobserved,
-               "processes": len(starts), "method": "base-attribute-initializer-process-tree-v1"}
+               "processes": len(starts), "method": method}
     artifact = {"version": 1, "base_commit": BASE_COMMIT, "tests": tests,
                 "paths": paths, "attributes": attributes, "context": context}
     artifact = refresh_dependencies(artifact, read_json(args.coverage), [args.observations])
+    if finalize is not None:
+        artifact = finalize(artifact, args)
     write_json(args.output, artifact)
     summary = {key: len(value) if key in ("passed", "missing") else value
                for key, value in context.items()}

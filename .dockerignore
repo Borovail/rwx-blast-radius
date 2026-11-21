@@ -16,3 +16,4 @@ maps/*
 !maps/body.json.gz
 !maps/dispatch.json.gz
 !maps/schema.json.gz
+!maps/scalars.json.gz
