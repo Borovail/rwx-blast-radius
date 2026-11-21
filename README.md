@@ -26,3 +26,16 @@ The selector validates the diff against pinned source, maps affected function bo
 ## Sources
 
 The Docker base image, Makefile run limits, scorer, scoring specification, dependency lock, and starter scheduling baseline come from the [official RWX kit](https://www.joinbuilders.org/buildathon/tracks/blast-radius). Development milestones and reproducible measurements are recorded in `PROGRESS.md`.
+
+The image fetches the MIT-licensed [SQLGlot base revision](https://github.com/tobymao/sqlglot/tree/eb11aec4be8cb2122afe713a4816662c3f0fb2fa) and keeps its license in `/app/base/LICENSE`. Offline map generation also uses pytest and Coverage.py. The submitted selector uses the Python standard library. See [map reproduction](maps/README.md) for the dependency versions and commands.
+
+## Publish a practice entry
+
+Create an empty public GitHub repository. From this checkout, replace `PUBLIC_GITHUB_URL` with its HTTPS or SSH clone URL and run:
+
+```sh
+git remote add origin PUBLIC_GITHUB_URL
+git push -u origin HEAD:main
+```
+
+Enter that repository's URL and the verified candidate SHA from `PROGRESS.md` on the [RWX track page](https://www.joinbuilders.org/buildathon/tracks/blast-radius). Keep the repository public and the submitted commit available through the results.

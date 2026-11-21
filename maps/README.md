@@ -67,3 +67,31 @@ counts without changing SQLGlot source or test assertions. Run the generator in 
 fresh interpreter. A nonzero exit status means the generated map is diagnostic
 and must not be used for narrowed selection. An optional `--sources-output` writes
 a local source snapshot for inspection; keep it outside the submitted repository.
+
+### Include execution in child processes
+
+Keep the first-pass map and run each supplemental test in a fresh interpreter.
+The tool records Python line events and file reads for the test process and its
+children. It merges observations only after checking the complete pytest
+protocol and matching every observed process start to a completed trace.
+Unverified tests remain in the supplemental set.
+
+```sh
+mkdir -p .work/refinement
+cp maps/coverage.json.gz .work/refinement/baseline.json.gz
+docker run --rm --network none --cpus 2 \
+  -e PYTHONPATH=/opt/deps -e PYTHONDONTWRITEBYTECODE=1 \
+  -v "$PWD/.work/sqlglot:/repo:ro" -v "$PWD/tools:/tools:ro" \
+  -v "$PWD/sample/tests.json:/tests.json:ro" \
+  -v "$PWD/.work/linux-packages:/opt/deps:ro" \
+  -v "$PWD/.work/refinement:/out" \
+  python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 \
+  python /tools/refine_coverage.py --repo /repo --manifest /tests.json \
+    --coverage /out/baseline.json.gz --observations /out/isolated \
+    --output /out/full-coverage.json.gz --max-tests 1620 --workers 2
+```
+
+Inspect the per-test results in `.work/refinement/full-coverage.json.gz.report.json`
+before copying the refined map to `maps/coverage.json.gz`. The shipped map
+incorporates 25 isolated tests across 98 processes. Its SHA-256 is
+`74da323cb0a893cac0284dc9f35fefb2040944bf5cfa01a46a614933858c3a59`.
