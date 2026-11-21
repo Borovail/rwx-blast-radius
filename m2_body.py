@@ -17,6 +17,7 @@ from typing import Any, Mapping
 
 COMPARISONS = ("Eq", "NotEq", "Lt", "LtE", "Gt", "GtE", "Is", "IsNot")
 BASE_COMMIT = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
+SUITE_POLICY = "ordinary-suite-and-isolated-operands-v1"
 
 
 def _scalar(atom):
@@ -116,6 +117,7 @@ class BodyWitnesses:
     def __init__(self, value: Mapping[str, Any], tests: Mapping[int, str],
                  coverage_sha256: str | None = None) -> None:
         self.files: Mapping[str, Any] = {}
+        self.suite_policy = False
         try:
             mapped = {row["number"]: row["id"] for row in value["tests"]}
             if (type(value["version"]) is not int or value["version"] != 1
@@ -126,6 +128,7 @@ class BodyWitnesses:
                     or not isinstance(value["files"], Mapping)):
                 return
             self.files = value["files"]
+            self.suite_policy = value.get("suite_policy") == SUITE_POLICY
         except (KeyError, TypeError, ValueError):
             return
 
@@ -142,31 +145,44 @@ class BodyWitnesses:
         except (OSError, ValueError, TypeError):
             return None
 
-    def equivalent(self, path: str, source: str, node: ast.Compare,
-                   operator: str, number: int) -> bool:
+    def equivalent_tests(self, path: str, source: str, node: ast.Compare,
+                         operator: str, covered: set[int]) -> set[int]:
         try:
             record = self.files[path]
             if record["sha256"] != hashlib.sha256(source.encode()).hexdigest():
-                return False
+                return set()
             site = record["sites"][comparison_site(node)]
             if site["ast"] != ast.dump(node):
-                return False
-            observations = site["tests"][str(number)]
-            if not isinstance(observations, list) or not observations:
-                return False
+                return set()
             original = type(node.ops[0]).__name__
-            # Identity comparisons themselves cannot raise or call user code.
-            # Other original operators need exception observations as well as
-            # returned values before equal-result witnesses can justify omission.
             if original not in ("Is", "IsNot"):
-                return False
-            return all(isinstance(item, list) and len(item) == 4
-                       and type(item[3]) is bool
-                       and observed_outcome(item, original) is item[3]
-                       and observed_outcome(item, operator) is item[3]
-                       for item in observations)
+                return set()
+            isolated = site["tests"]
+            if not isinstance(isolated, Mapping):
+                return set()
         except (KeyError, TypeError, ValueError, AttributeError, IndexError):
-            return False
+            return set()
+
+        def equivalent(observations):
+            return (isinstance(observations, list) and bool(observations)
+                    and all(isinstance(item, list) and len(item) == 4
+                            and type(item[3]) is bool
+                            and observed_outcome(item, original) is item[3]
+                            and observed_outcome(item, operator) is item[3]
+                            for item in observations))
+
+        result = {n for n in covered if equivalent(isolated.get(str(n)))} if isolated else set()
+        suite = site.get("suite")
+        if self.suite_policy and isinstance(suite, Mapping):
+            numbers = suite.get("numbers")
+            if (isinstance(numbers, list) and all(type(n) is int for n in numbers)
+                    and equivalent(suite.get("observations"))):
+                result.update(covered.intersection(numbers))
+        return result
+
+    def equivalent(self, path: str, source: str, node: ast.Compare,
+                   operator: str, number: int) -> bool:
+        return number in self.equivalent_tests(path, source, node, operator, {number})
 
 
 def narrow_body(path: str, old_source: str, new_source: str, old_tree: ast.AST,
@@ -192,7 +208,7 @@ def narrow_body(path: str, old_source: str, new_source: str, old_tree: ast.AST,
         # execution elsewhere), so only observed comparison locations narrow.
         if not covered:
             return None
-        selected.update(number for number in covered
-                        if witnesses is None or not witnesses.equivalent(
-                            path, old_source, node, operator, number))
+        if witnesses is not None:
+            covered -= witnesses.equivalent_tests(path, old_source, node, operator, covered)
+        selected.update(covered)
     return selected

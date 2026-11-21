@@ -132,8 +132,47 @@ descendants must finish and produce complete observations before their test can
 contribute to the index.
 
 The recorded run exercised a broader set of comparison operators. The shipped
-map retains only baseline identity comparisons and contains 294 sites across
-36 files. The command above collects those sites directly.
+isolated index for that test contains 294 identity comparisons across 36
+files. The command above collects those sites directly.
+
+The extended index also uses comparisons reached in both ordinary suite
+runs and a numbered test's isolated run. Both suite runs must observe
+identical facts at that source location. The isolated facts must be a
+nonempty subset of those facts. At selection time, the replacement operator
+must return the original boolean for every recorded pair. An opaque
+comparison, a changing observation or an incomplete process trace prevents
+the additional omission.
+
+To rebuild this extension in the pinned Linux Python image, mount the
+project read-only at `/project`, SQLGlot read-only at `/repo`, the pinned
+test dependencies on `PYTHONPATH`, and a writable directory at `/out`.
+From the project Git checkout on the host, export the original isolated
+index to that output directory before collecting new observations.
+
+```sh
+git show ba8b297de562963855c202779e598c0327fe050c:maps/body.json.gz > /path/to/output/original.json.gz
+```
+
+Run the following from `/project` in the container. Each command measures
+only the pinned checkout and the numbered test manifest.
+
+```sh
+for run in a b; do
+    python tools/build_body_suite.py --repo /repo --manifest sample/tests.json \
+        --coverage maps/coverage.json.gz --observations "/out/suite-$run" \
+        --output "/out/suite-$run.json.gz"
+done
+python tools/build_body_index.py --certify-types --repo /repo --manifest sample/tests.json \
+    --coverage maps/coverage.json.gz --observations /out/isolated --max-tests 1620 \
+    --operators Is,IsNot --output /out/isolated.json.gz
+python tools/merge_suite_body.py --original /out/original.json.gz --isolated /out/isolated.json.gz \
+    --suite /out/suite-a.json.gz --repeat /out/suite-b.json.gz --output /out/body.json.gz
+```
+
+Each ordinary run checks the manifest, process graph, original source hashes
+and comparison coordinates. The companion reports give the number of
+subtests and processes. The isolated collector also records which numbered
+tests passed its checks. The production image uses the joined index.
 
 ### Expression argument schemas
 

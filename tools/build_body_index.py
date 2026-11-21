@@ -25,18 +25,23 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from refine_coverage import BASE_COMMIT, _RUNNER, fingerprint, read_json, write_json
+from build_body_process import validate_processes
 
+LEGACY_METHOD = "isolated-base-identity-operands-v1"
+STRICT_METHOD = "isolated-base-identity-operands-certified-types-v1"
 
 def observe(args, test, stamp):
     run = args.observations / str(test["number"]) / uuid.uuid4().hex
     run.mkdir(parents=True)
     trace = Path(__file__).resolve().parent / "trace_worker" / "sitecustomize.py"
     with tempfile.TemporaryDirectory(prefix="blast-body-hooks-") as hooks:
+        install = ("from suite_snapshot import snapshot\ninstall(snapshotter=snapshot)\n"
+                   if args.certify_types else "install()\n")
         Path(hooks, "sitecustomize.py").write_text(
             "from pathlib import Path\n"
             f"exec(compile(Path({str(trace)!r}).read_text(), {str(trace)!r}, 'exec'), "
             "{'__name__': 'blast_body_trace'})\n"
-            "from build_body_worker import install\ninstall()\n")
+            "from build_body_worker import install\n" + install)
         env = os.environ.copy()
         env.update({
             "PYTHONPATH": os.pathsep.join([hooks, str(ROOT / "tools"), str(ROOT),
@@ -71,6 +76,7 @@ def observe(args, test, stamp):
                 break
             time.sleep(0.05)
     write_json(run / "run.json", {"version": 1, "base_commit": BASE_COMMIT,
+               "method": STRICT_METHOD if args.certify_types else LEGACY_METHOD,
                "base_fingerprint": stamp, "test": test, "pid": process.pid,
                "token": run.name, "returncode": returncode, "timed_out": timed_out,
                "wall_seconds": round(time.monotonic() - started, 3),
@@ -80,9 +86,10 @@ def observe(args, test, stamp):
     return run
 
 
-def validate(run, test, stamp, coverage):
+def validate(run, test, stamp, coverage, method=LEGACY_METHOD):
     metadata = read_json(run / "run.json")
-    if (metadata["base_commit"] != BASE_COMMIT or metadata["base_fingerprint"] != stamp
+    if (metadata.get("method", LEGACY_METHOD) != method
+            or metadata["base_commit"] != BASE_COMMIT or metadata["base_fingerprint"] != stamp
             or metadata["test"]["number"] != test["number"]
             or metadata["test"]["id"] != test["id"]
             or metadata["platform"] != "linux" or metadata["timed_out"]
@@ -96,53 +103,7 @@ def validate(run, test, stamp, coverage):
             or any(nodeid != test["id"] or outcome != "passed"
                    for nodeid, phase, outcome in report["outcomes"])):
         raise ValueError("incomplete/failed/skipped pytest protocol")
-    starts = {int(p.name.split(".")[0]): read_json(p) for p in run.glob("*.start.json")}
-    done = {int(p.name.split(".")[0]): read_json(p) for p in run.glob("*.done.json")}
-    bodies = {int(p.name.split(".")[0]): read_json(p) for p in run.glob("*.body.json")}
-    expected, checked, files, unknown = {metadata["pid"]}, set(), {}, set()
-    while expected - checked:
-        pid = min(expected - checked)
-        start, record, body = starts.get(pid), done.get(pid), bodies.get(pid)
-        if start is None or record is None or body is None:
-            raise ValueError("missing process startup/exit/witness report")
-        for value in (start, record, body):
-            if value["version"] != 1 or value["pid"] != pid or value["token"] != metadata["token"]:
-                raise ValueError("process attestation mismatch")
-        if (start["repo"] != metadata["repo"] or record["repo"] != metadata["repo"]
-                or not record["complete"] or not record["trace_installed"] or record["errors"]
-                or not body["complete"] or body["errors"]):
-            raise ValueError("incomplete process tracing/instrumentation")
-        expected.update(int(child) for child in record["children"])
-        for path, lines in record["lines"].items():
-            if path not in coverage["paths"]:
-                if path.endswith(".py") and "__pycache__/" not in path:
-                    raise ValueError("unknown executed base source")
-                continue
-            count = coverage["paths"][path]["line_count"]
-            if any(type(line) is not int or not 1 <= line <= count for line in lines):
-                raise ValueError("invalid observed base line")
-        unknown.update(body["unknown"])
-        for path, item in body["files"].items():
-            if path not in coverage["paths"] or item["sha256"] != coverage["paths"][path]["sha256"]:
-                raise ValueError("witness source differs from pinned base")
-            output = files.setdefault(path, {"sha256": item["sha256"], "sites": {}})
-            for site, value in item["sites"].items():
-                if not isinstance(value["observations"], list):
-                    raise ValueError("invalid operand observations")
-                previous = output["sites"].setdefault(site, value.copy())
-                if previous["ast"] != value["ast"] or previous["operator"] != value["operator"]:
-                    raise ValueError("comparison site changed within observation")
-                if previous is not value:
-                    combined = {json.dumps(item, sort_keys=True) for item in previous["observations"]}
-                    combined.update(json.dumps(item, sort_keys=True) for item in value["observations"])
-                    previous["observations"] = ([None] if len(combined) > 64 else
-                                                [json.loads(item) for item in sorted(combined)])
-        checked.add(pid)
-    if set(starts) != checked or set(done) != checked or set(bodies) != checked:
-        raise ValueError("unaccounted process in witness directory")
-    for path in unknown:
-        files.pop(path, None)
-    return files, len(checked), metadata
+    return validate_processes(run, metadata, coverage)
 
 
 def main():
@@ -159,6 +120,8 @@ def main():
     parser.add_argument("--operators", default="Is,IsNot",
                         help="comma-separated original operators to observe")
     parser.add_argument("--merge-only", action="store_true")
+    parser.add_argument("--certify-types", action="store_true",
+                        help="require comparison methods to match the operand's native scalar family")
     args = parser.parse_args()
     if not set(args.operators.split(",")).issubset({"Is", "IsNot"}):
         parser.error("witness omission currently supports original Is/IsNot only")
@@ -175,6 +138,7 @@ def main():
             != {n: r["id"] for n, r in tests.items()}):
         raise ValueError("unsupported base coverage/manifest")
     stamp = fingerprint(args.repo, coverage)
+    method = STRICT_METHOD if args.certify_types else LEGACY_METHOD
     numbers = (set(args.test_number) if args.test_number is not None else
                {row["number"] for row in sorted(manifest, key=lambda r: (-r["seconds"], r["number"]))[:args.max_tests]})
     files, results = {}, []
@@ -189,7 +153,7 @@ def main():
                 run = args.observations / str(number) / token
             else:
                 run = observe(args, test, stamp)
-            observed, processes, metadata = validate(run, test, stamp, coverage)
+            observed, processes, metadata = validate(run, test, stamp, coverage, method)
             for path, record in observed.items():
                 output = files.setdefault(path, {"sha256": record["sha256"], "sites": {}})
                 for site, value in record["sites"].items():
@@ -209,7 +173,7 @@ def main():
     write_json(args.output, {"version": 1, "base_commit": BASE_COMMIT, "complete": True,
                "coverage_sha256": hashlib.sha256(args.coverage.read_bytes()).hexdigest(),
                "tests": coverage["tests"], "files": files,
-               "method": "isolated-base-identity-operands-v1",
+               "method": method,
                "base_fingerprint": stamp,
                "observed_tests": sorted(row["number"] for row in results if row["verified"])})
     write_json(args.output.with_suffix(args.output.suffix + ".report.json"), {"results": results})

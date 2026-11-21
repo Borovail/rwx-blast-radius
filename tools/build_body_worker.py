@@ -7,6 +7,7 @@ import atexit
 import hashlib
 import importlib.abc
 import importlib.machinery
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -99,9 +100,11 @@ class Instrumenter(ast.NodeTransformer):
         return ast.copy_location(result, node)
 
 
-def install():
+def install(*, snapshotter=None):
     if not os.environ.get("BLAST_BODY_DIR"):
         return
+    if snapshotter is None:
+        snapshotter = _snapshot
     directory = Path(os.environ["BLAST_BODY_DIR"])
     root = Path(os.environ["BLAST_TRACE_REPO"]).resolve()
     token = os.environ["BLAST_TRACE_TOKEN"]
@@ -135,7 +138,7 @@ def install():
 
         if side == 0:
             try:
-                snapshot = _snapshot(value)
+                snapshot = snapshotter(value)
                 if snapshot[1][0] == "unknown":
                     mark_unknown(path, site, key)
                 else:
@@ -155,8 +158,8 @@ def install():
                         actual_left = reference()
                         if actual_left is None:
                             raise ValueError("left operand disappeared before comparison")
-                        left = _snapshot(actual_left)
-                    right = _snapshot(value)
+                        left = snapshotter(actual_left)
+                    right = snapshotter(value)
                     if left[1][0] == "unknown" or right[1][0] == "unknown":
                         mark_unknown(path, site, key)
                     else:
