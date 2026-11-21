@@ -107,3 +107,25 @@ The generator verifies the source hashes and intersects source-inspection sites
 with measured test and startup coverage. The runtime enables comment selection
 when the index matches the coverage digest and all observed sites can be
 attributed to individual tests.
+
+For more precise attribution of code-object reads, run
+`python tools/build_observer_targets.py --repo .work/sqlglot --coverage maps/coverage.json.gz --observations .work/code-observations --output maps/observer_targets.json`
+under the pinned Linux image with the locked test dependencies. The tool reruns
+the tests identified by the position index. It checks their outcome and matches
+executed attribute loads to audit events before recording observed source files.
+
+`body.json.gz` contains bounded baseline operands, identity relationships and
+observed results for identity comparisons reached by the longest recorded test
+and its child processes. The selector evaluates a changed comparison against
+these observations at runtime. Unsupported operand types and missing observations
+retain ordinary coverage.
+
+```sh
+python tools/build_body_index.py --repo .work/sqlglot --manifest sample/tests.json \
+  --coverage maps/coverage.json.gz --observations .work/body-observations \
+  --max-tests 1 --operators Is,IsNot --output maps/body.json.gz
+```
+
+Use the pinned Linux Python and test dependencies for this command. All Python
+descendants must finish and produce complete observations before their test can
+contribute to the index.

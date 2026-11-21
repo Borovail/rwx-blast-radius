@@ -19,6 +19,7 @@ from typing import Any, Iterable, Mapping
 from trivia import equivalent_python
 from handlers import callback_tests
 from guards import guard_tests
+from m2_body import BodyWitnesses, narrow_body
 from observer_targets import ObserverTargets
 
 
@@ -265,6 +266,7 @@ class ImpactSelector:
         self._untraced: set[int] = set()
         self._position_observers: set[int] | None = None
         self._observer_targets: ObserverTargets | None = None
+        self._body: BodyWitnesses | None = None
         try:
             mapped_tests = {entry["number"]: entry["id"] for entry in self.coverage["tests"]}
             context = self.coverage.get("context", {})
@@ -305,6 +307,8 @@ class ImpactSelector:
             coverage = sources = None
         observers = cls.load_position_observers(coverage_path) if coverage_path is not None else None
         selector = cls(tests, coverage, sources, observers)
+        if selector._ready and coverage_path is not None:
+            selector._body = BodyWitnesses.from_files(Path(coverage_path).with_name("body.json.gz"), selector.tests, coverage_path)
         if selector._ready and observers is not None:
             selector._observer_targets = ObserverTargets.from_files(coverage_path, coverage)
         return selector
@@ -429,6 +433,15 @@ class ImpactSelector:
                     if len(matching) != 1 or anchor in record["startup"] or anchor + 1 in record["startup"]:
                         raise _UnsafePatch("insertion does not have two safe scope anchors")
                     touched.add(matching[0])
+                if self._body is not None and any(
+                    re.search(r"\bis\b|[=!<>]=", line.text) for hunk in patch.hunks
+                    for line in hunk.lines if line.kind == "-"
+                ):
+                    observed = narrow_body(patch.path, record["source"], new_source,
+                                           old_tree, new_tree, record, self._body)
+                    if observed is not None:
+                        selected.update(observed)
+                        continue
                 if len(removed) == 1 and not insertions:
                     line = next(iter(removed))
                     original_line = record["source"].split("\n")[line - 1].lstrip()
