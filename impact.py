@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
 from trivia import equivalent_python
+from handlers import callback_tests
 
 
 BASE_COMMIT = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
@@ -401,6 +402,10 @@ class ImpactSelector:
                 # Parsing alone accepts, for example, a return outside a function.
                 compile(new_tree, patch.path, "exec", dont_inherit=True)
                 if _module_shell(old_tree) != _module_shell(new_tree):
+                    consumers = callback_tests(old_tree, new_tree, record, self._record)
+                    if consumers is not None:
+                        selected.update(consumers)
+                        continue
                     raise _UnsafePatch("import-time module structure changed")
                 touched: set[_Scope] = set()
                 for line in removed:

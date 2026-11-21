@@ -2,6 +2,7 @@
 !selector.py
 !scheduler.py
 !impact.py
+!handlers.py
 !trivia.py
 !maps/
 maps/*
