@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping
 
 from trivia import equivalent_python
 from handlers import callback_tests
+from observer_targets import ObserverTargets
 
 
 BASE_COMMIT = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
@@ -262,6 +263,7 @@ class ImpactSelector:
         self._ready = False
         self._untraced: set[int] = set()
         self._position_observers: set[int] | None = None
+        self._observer_targets: ObserverTargets | None = None
         try:
             mapped_tests = {entry["number"]: entry["id"] for entry in self.coverage["tests"]}
             context = self.coverage.get("context", {})
@@ -287,7 +289,10 @@ class ImpactSelector:
         coverage_path: str | Path | None = None,
         base_sources_path: str | Path | None = None,
     ) -> "ImpactSelector":
-        tests = _read_json(tests_path)
+        return cls.with_assets(_read_json(tests_path), coverage_path, base_sources_path)
+
+    @classmethod
+    def with_assets(cls, tests, coverage_path, base_sources_path):
         try:
             coverage = _read_json(coverage_path) if coverage_path is not None else None
             sources = (
@@ -298,7 +303,10 @@ class ImpactSelector:
         except (OSError, ValueError, TypeError):
             coverage = sources = None
         observers = cls.load_position_observers(coverage_path) if coverage_path is not None else None
-        return cls(tests, coverage, sources, observers)
+        selector = cls(tests, coverage, sources, observers)
+        if selector._ready and observers is not None:
+            selector._observer_targets = ObserverTargets.from_files(coverage_path, coverage)
+        return selector
 
     @staticmethod
     def load_position_observers(coverage_path: str | Path) -> list[int] | None:
@@ -393,7 +401,9 @@ class ImpactSelector:
                     for hunk in patch.hunks for line in hunk.lines if line.kind != " "
                 ):
                     if equivalent_python(record["source"], new_source, patch.path) is not None:
-                        selected.update(self._position_observers)
+                        observers = (self._observer_targets.select(patch.path)
+                                     if self._observer_targets is not None else self._position_observers)
+                        selected.update(observers)
                         continue
                 if patch.path not in self._scopes:
                     self._scopes[patch.path] = _scope_tree(record["source"])

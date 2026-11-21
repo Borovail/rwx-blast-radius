@@ -3,8 +3,10 @@
 !scheduler.py
 !impact.py
 !handlers.py
+!observer_targets.py
 !trivia.py
 !maps/
 maps/*
 !maps/coverage.json.gz
 !maps/positions.json
+!maps/observer_targets.json

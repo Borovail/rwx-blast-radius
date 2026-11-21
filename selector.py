@@ -1,7 +1,6 @@
 """Choose tests and emit their worker assignments as competition JSONL."""
 
 import argparse
-import gzip
 import json
 from pathlib import Path
 
@@ -19,10 +18,7 @@ def main() -> None:
     args = parser.parse_args()
     data_dir = args.data_dir
     tests = json.loads((data_dir / "tests.json").read_text("utf-8"))["tests"]
-    with gzip.open(args.coverage, "rt", encoding="utf-8") as stream:
-        coverage = json.load(stream)
-    observers = ImpactSelector.load_position_observers(args.coverage)
-    selector = ImpactSelector(tests, coverage, args.base, observers)
+    selector = ImpactSelector.with_assets(tests, args.coverage, args.base)
     by_number = {test["number"]: test for test in tests}
     schedules = {}
     for patch in sorted((data_dir / "commits").glob("*.patch")):
